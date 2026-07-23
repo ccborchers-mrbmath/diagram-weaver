@@ -1,24 +1,79 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useState } from "react";
+import { InputPanel } from "@/components/editor/InputPanel";
+import { SvgCanvas } from "@/components/editor/SvgCanvas";
+import { CodeEditor } from "@/components/editor/CodeEditor";
+import { SAMPLE_SVG } from "@/lib/svg/sample";
 
-// No head() here: the home route inherits title/description/og/twitter from
-// __root.tsx, and ships no og:image so serve-time hosting can inject the
-// project's social preview (explicit og:image or latest screenshot).
 export const Route = createFileRoute("/")({
-  component: Index,
+  head: () => ({
+    meta: [
+      { title: "SVG Math Diagram Editor" },
+      {
+        name: "description",
+        content:
+          "Generate and refine mathematical SVG diagrams with a bidirectional visual canvas and code editor.",
+      },
+      { property: "og:title", content: "SVG Math Diagram Editor" },
+      {
+        property: "og:description",
+        content:
+          "A split-screen workspace for math teachers to draft, drag, and hand-edit SVG diagrams.",
+      },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary_large_image" },
+    ],
+  }),
+  component: EditorPage,
 });
 
-// IMPORTANT: Replace this placeholder. See ./README.md for routing conventions.
-function Index() {
+function EditorPage() {
+  const [svg, setSvg] = useState<string>(SAMPLE_SVG);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
   return (
-    <div
-      className="flex min-h-screen items-center justify-center"
-      style={{ backgroundColor: "#fcfbf8" }}
-    >
-      <img
-        data-lovable-blank-page-placeholder="REMOVE_THIS"
-        src="https://cdn.gpteng.co/blank-app-v1.svg"
-        alt="Your app will live here!"
-      />
+    <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
+      <InputPanel onGenerate={setSvg} />
+
+      <main className="flex min-w-0 flex-1 flex-col">
+        <section className="flex min-h-0 flex-[3] flex-col border-b border-border">
+          <header className="flex items-center justify-between border-b border-border bg-card px-4 py-2">
+            <h2 className="text-sm font-medium">Visual Canvas</h2>
+            <div className="text-xs text-muted-foreground">
+              {selectedId ? (
+                <>
+                  Selected:{" "}
+                  <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground">
+                    #{selectedId}
+                  </code>
+                </>
+              ) : (
+                <>Click any element to select · drag to move</>
+              )}
+            </div>
+          </header>
+          <div className="min-h-0 flex-1">
+            <SvgCanvas
+              svgSource={svg}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              onChange={setSvg}
+            />
+          </div>
+        </section>
+
+        <section className="flex min-h-0 flex-[2] flex-col">
+          <header className="flex items-center justify-between border-b border-border bg-card px-4 py-2">
+            <h2 className="text-sm font-medium">SVG Code</h2>
+            <span className="text-xs text-muted-foreground">
+              {svg.length.toLocaleString()} chars
+            </span>
+          </header>
+          <div className="min-h-0 flex-1">
+            <CodeEditor value={svg} onChange={setSvg} />
+          </div>
+        </section>
+      </main>
     </div>
   );
 }
