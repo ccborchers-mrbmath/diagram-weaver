@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { parseSvg, translateElementById } from "@/lib/svg/parse";
+import { parseSvg } from "@/lib/svg/parse";
 
 type Props = {
   svgSource: string;
@@ -14,6 +14,7 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
   const hostRef = useRef<HTMLDivElement>(null);
   const [viewBox, setViewBox] = useState<string>("0 0 400 300");
   const [selectionBox, setSelectionBox] = useState<BBox | null>(null);
+  const draggingRef = useRef(false);
 
   // Validate incoming source; keep last valid rendered string so typing invalid
   // XML in the code editor doesn't blow away the canvas.
@@ -29,9 +30,10 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
     return lastValidRef.current;
   }, [svgSource]);
 
-  // Inject SVG into the DOM. We use innerHTML because we need real DOM nodes
-  // to attach pointer handlers to and to read getBBox() from.
+  // Inject SVG into the DOM. Skip re-injection while a drag is in flight so
+  // the captured element doesn't get detached mid-drag.
   useLayoutEffect(() => {
+    if (draggingRef.current) return;
     const host = hostRef.current;
     if (!host) return;
     host.innerHTML = renderSource;
@@ -46,7 +48,7 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
   }, [renderSource]);
 
   // Recompute selection bounding box whenever selection or source changes.
-  useLayoutEffect(() => {
+  const recomputeSelectionBox = () => {
     if (!selectedId) {
       setSelectionBox(null);
       return;
@@ -66,6 +68,11 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
     } catch {
       setSelectionBox(null);
     }
+  };
+
+  useLayoutEffect(() => {
+    recomputeSelectionBox();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, renderSource]);
 
   // Attach pointer handlers to every [id] element for select + drag.
@@ -80,8 +87,11 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
 
     for (const el of draggables) {
       el.style.cursor = "grab";
+      el.style.pointerEvents = "all";
+
       const onPointerDown = (e: PointerEvent) => {
         e.stopPropagation();
+        e.preventDefault();
         const id = el.getAttribute("id");
         if (!id) return;
         onSelect(id);
@@ -97,39 +107,53 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
           return { x: p.x, y: p.y };
         };
 
+        const tag = el.tagName.toLowerCase();
+        // Snapshot original attributes so drag is relative to drag-start.
+        const origin = readPositionAttrs(el, tag);
         const start = toSvg(e.clientX, e.clientY);
-        let latest = svgSource;
-        el.setPointerCapture(e.pointerId);
+
+        draggingRef.current = true;
         el.style.cursor = "grabbing";
 
-        const onMove = (ev: PointerEvent) => {
-          const cur = toSvg(ev.clientX, ev.clientY);
-          const dx = cur.x - start.x;
-          const dy = cur.y - start.y;
-          const next = translateElementById(latest, id, dx, dy);
-          if (next) {
-            latest = next;
-            onChange(next);
-            // update start so subsequent deltas are relative to last position
-            start.x = cur.x;
-            start.y = cur.y;
-          }
-        };
-        const onUp = (ev: PointerEvent) => {
+        let rafId = 0;
+        let pending: { dx: number; dy: number } | null = null;
+
+        const apply = () => {
+          rafId = 0;
+          if (!pending) return;
+          writePositionAttrs(el, tag, origin, pending.dx, pending.dy);
+          // Update selection outline live.
           try {
-            el.releasePointerCapture(ev.pointerId);
+            const b = (el as SVGGraphicsElement).getBBox();
+            setSelectionBox({ x: b.x, y: b.y, width: b.width, height: b.height });
           } catch {
             /* noop */
           }
-          el.style.cursor = "grab";
-          el.removeEventListener("pointermove", onMove);
-          el.removeEventListener("pointerup", onUp);
-          el.removeEventListener("pointercancel", onUp);
         };
-        el.addEventListener("pointermove", onMove);
-        el.addEventListener("pointerup", onUp);
-        el.addEventListener("pointercancel", onUp);
+
+        const onMove = (ev: PointerEvent) => {
+          const cur = toSvg(ev.clientX, ev.clientY);
+          pending = { dx: cur.x - start.x, dy: cur.y - start.y };
+          if (!rafId) rafId = requestAnimationFrame(apply);
+        };
+
+        const onUp = () => {
+          window.removeEventListener("pointermove", onMove);
+          window.removeEventListener("pointerup", onUp);
+          window.removeEventListener("pointercancel", onUp);
+          if (rafId) cancelAnimationFrame(rafId);
+          el.style.cursor = "grab";
+          draggingRef.current = false;
+          // Serialize final DOM state once, propagate to parent/code editor.
+          const serialized = new XMLSerializer().serializeToString(svg);
+          onChange(serialized);
+        };
+
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
+        window.addEventListener("pointercancel", onUp);
       };
+
       el.addEventListener("pointerdown", onPointerDown);
       cleanups.push(() => el.removeEventListener("pointerdown", onPointerDown));
     }
@@ -139,7 +163,7 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
     cleanups.push(() => svg.removeEventListener("pointerdown", onBgDown));
 
     return () => cleanups.forEach((c) => c());
-  }, [renderSource, svgSource, onChange, onSelect]);
+  }, [renderSource, onChange, onSelect]);
 
   return (
     <div className="relative h-full w-full bg-[color:var(--canvas-bg)] overflow-hidden">
@@ -165,6 +189,86 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
       )}
     </div>
   );
+}
+
+// --- helpers ---
+
+type Origin = Record<string, number> & { __transform?: string };
+
+function num(el: Element, name: string): number {
+  return parseFloat(el.getAttribute(name) || "0") || 0;
+}
+
+function readPositionAttrs(el: Element, tag: string): Origin {
+  switch (tag) {
+    case "text":
+    case "tspan":
+    case "rect":
+    case "image":
+    case "use":
+    case "foreignobject":
+      return { x: num(el, "x"), y: num(el, "y") };
+    case "circle":
+    case "ellipse":
+      return { cx: num(el, "cx"), cy: num(el, "cy") };
+    case "line":
+      return {
+        x1: num(el, "x1"),
+        y1: num(el, "y1"),
+        x2: num(el, "x2"),
+        y2: num(el, "y2"),
+      };
+    default:
+      return { __transform: el.getAttribute("transform") || "" } as Origin;
+  }
+}
+
+function writePositionAttrs(
+  el: Element,
+  tag: string,
+  origin: Origin,
+  dx: number,
+  dy: number,
+) {
+  const s = (n: number) => (Math.round(n * 100) / 100).toString();
+  switch (tag) {
+    case "text":
+    case "tspan":
+    case "rect":
+    case "image":
+    case "use":
+    case "foreignobject":
+      el.setAttribute("x", s((origin.x ?? 0) + dx));
+      el.setAttribute("y", s((origin.y ?? 0) + dy));
+      break;
+    case "circle":
+    case "ellipse":
+      el.setAttribute("cx", s((origin.cx ?? 0) + dx));
+      el.setAttribute("cy", s((origin.cy ?? 0) + dy));
+      break;
+    case "line":
+      el.setAttribute("x1", s((origin.x1 ?? 0) + dx));
+      el.setAttribute("y1", s((origin.y1 ?? 0) + dy));
+      el.setAttribute("x2", s((origin.x2 ?? 0) + dx));
+      el.setAttribute("y2", s((origin.y2 ?? 0) + dy));
+      break;
+    default: {
+      const existing = origin.__transform || "";
+      const match = existing.match(
+        /translate\(\s*(-?[\d.]+)[ ,]+(-?[\d.]+)\s*\)/,
+      );
+      let tx = 0;
+      let ty = 0;
+      let rest = existing;
+      if (match) {
+        tx = parseFloat(match[1]);
+        ty = parseFloat(match[2]);
+        rest = existing.replace(match[0], "").trim();
+      }
+      const next = `translate(${s(tx + dx)}, ${s(ty + dy)})${rest ? " " + rest : ""}`;
+      el.setAttribute("transform", next);
+    }
+  }
 }
 
 function cssEscape(id: string): string {

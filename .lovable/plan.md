@@ -1,87 +1,50 @@
-# Bidirectional SVG Math Diagram Editor — Plan
+## Goal
 
-A frontend-only prototype. No backend, no real AI. One shared SVG string in state drives both the visual canvas and the code editor; edits in either direction propagate instantly.
+Make labels click-and-draggable on the canvas, and make the code editor actually editable. Keep scope tight: labels first (the `<text id="label-*">` nodes), then the same mechanism trivially covers other `[id]` elements.
 
-## Layout
+## Root causes
 
-Replace `src/routes/index.tsx` (the placeholder) with the editor. Full-height, full-width, no scroll on the shell.
+**Drag dies after one move.** In `SvgCanvas.tsx`, every `pointermove` calls `onChange(next)`, which updates React state in the parent. That re-renders `SvgCanvas`, and the `useLayoutEffect` that does `host.innerHTML = renderSource` throws away the exact DOM node we captured the pointer on. Once detached, `pointermove`/`pointerup` stop firing on it, so the drag freezes and pointer capture leaks.
 
-```text
-┌───────────────────────────┬──────────────────────────────────────────┐
-│  Diagram Generator        │  Visual Canvas                           │
-│  (left sidebar, ~360px)   │  (top of right panel, flex-1)            │
-│                           │                                          │
-│  • Prompt textarea        │  Renders live SVG, drag any [id] node    │
-│  • Mic button (Web Speech)│                                          │
-│  • Image drop zone        ├──────────────────────────────────────────┤
-│  • Generate Diagram btn   │  Code Editor (CodeMirror, XML, dark)     │
-│                           │  Two-way bound to the same SVG string    │
-└───────────────────────────┴──────────────────────────────────────────┘
-```
+**Code editor feels frozen.** Two contributing issues:
+- Every keystroke round-trips through parent state and back into CodeMirror's `value` prop; combined with the drag re-injection path above, focus/selection can be disrupted.
+- The CodeMirror host uses `height="100%"` inside a flex column — if the flex chain collapses, the editor renders 0px tall and looks read-only.
 
-Resizable split is out of scope — fixed sidebar width, 60/40 vertical split on the right.
+## Fix
 
-## Component structure
+### 1. Decouple live drag from React state (`src/components/editor/SvgCanvas.tsx`)
 
-- `src/routes/index.tsx` — page shell, owns the single `svgSource` state string plus `selectedId`. Adds route `head()` with app-specific title/description/OG.
-- `src/components/editor/InputPanel.tsx` — left sidebar. Owns prompt text, recording state, uploaded image preview, loading state. Calls `onGenerate(mockSvg)` after a 2s timeout.
-- `src/components/editor/VoiceButton.tsx` — wraps `window.SpeechRecognition || webkitSpeechRecognition`, appends transcript to prompt, pulsing red dot while recording. Gracefully disables with a tooltip if the API is missing.
-- `src/components/editor/ImageDropzone.tsx` — dashed `Card`, drag-over highlight, accepts one image, shows thumbnail + filename + clear button. File kept in local state only.
-- `src/components/editor/SvgCanvas.tsx` — renders the SVG, overlays a selection outline + drag layer. Receives `svgSource`, `selectedId`, `onChange(nextSvg)`, `onSelect(id)`.
-- `src/components/editor/CodeEditor.tsx` — CodeMirror 6 with XML mode + dark theme. Two-way bound; debounced upward propagation (~150ms) to avoid thrash while typing.
-- `src/lib/svg/parse.ts` — helpers: parse string → `Document`, serialize back, find element by id, update attributes, list draggable ids.
+- During a drag, mutate the live DOM element's attributes directly (`el.setAttribute("x", …)` etc.) for immediate visual feedback. Do NOT call `onChange` on every `pointermove`.
+- On `pointerup`, serialize the current SVG once (`new XMLSerializer().serializeToString(svg)`) and call `onChange(finalString)` exactly once. This is the only time the parent state and the code editor update.
+- Add a `draggingRef` guard so the "source changed → re-inject innerHTML" effect skips re-injection while a drag is in flight (defensive; with the single-shot `onChange` it shouldn't fire mid-drag anyway).
+- Attach `pointermove`/`pointerup` to `window` (not the element) so pointer capture loss on re-render can't kill the drag.
+- Keep the selection outline in sync during drag by re-reading `getBBox()` on each move via a local rAF loop.
 
-Central rule: `svgSource: string` is the single source of truth. Every edit produces a new string.
+### 2. Make labels obviously interactive
 
-## Canvas interaction
+- For every `[id]` node, set `cursor: grab` (already done) and also `pointer-events: all` so `<text>` hit-testing is reliable regardless of fill.
+- Slightly enlarge text hit area by adding `paint-order: stroke` isn't needed; instead we just rely on `pointer-events: all`. Labels currently work by tag (`text` → update `x`/`y`) — that path in `parse.ts` is already correct.
 
-- On mount / when `svgSource` changes, parse with `DOMParser` and collect every element with an `id` attribute — those are the draggable set (per your answer).
-- Render the SVG by setting `dangerouslySetInnerHTML` on a wrapper `<div>`, then attach pointer handlers imperatively to each `[id]` node via a `ref` effect. This keeps rendering cheap and avoids re-implementing SVG.
-- Click on an `[id]` node → `setSelectedId(id)`. Overlay draws a dashed rectangle around that node's `getBBox()` in SVG user-space coordinates (a sibling `<svg>` overlay positioned over the canvas with matching `viewBox`).
-- Pointer-down + move on the selected node:
-  - Convert client coords → SVG coords using `svg.getScreenCTM().inverse()`.
-  - Compute delta from drag start.
-  - For `<text>`: update `x`/`y` attributes. For shapes (`circle`: `cx`/`cy`; `rect`: `x`/`y`; `line`: shift both endpoints; `ellipse`: `cx`/`cy`; `polygon`/`path`: apply/merge a `transform="translate(dx,dy)"`) — one small dispatch table in `parse.ts`.
-  - On pointer-up, serialize the DOM back to a string and call `onChange`.
-- Selection outline updates live during drag by re-reading `getBBox()`.
+### 3. Code editor reliability (`src/components/editor/CodeEditor.tsx` + `src/routes/index.tsx`)
 
-## Code editor sync
+- Ensure the editor container actually has height: give the `<div>` wrapping `CodeMirror` `h-full min-h-0` and set CodeMirror `height="100%"` with a flex parent that has `min-h-0`. Verify the code-panel `<section>` in `index.tsx` has `min-h-0` (it does) and that the inner `<div>` also does.
+- Since drag no longer spams `onChange`, keystrokes in the editor won't be interrupted by canvas re-injections.
+- No debouncing needed for correctness now, but keep `onChange` synchronous; @uiw/react-codemirror preserves cursor when the incoming `value` matches the current doc.
 
-- CodeMirror value is bound to `svgSource`. User keystrokes call `onChange` (debounced) which updates the state, which re-renders the canvas.
-- To prevent cursor jumps when the canvas updates the source mid-drag, `CodeEditor` compares incoming prop vs current doc and only replaces when they differ and the editor isn't focused, or replaces via a transaction that preserves the selection.
-- Invalid XML while typing: keep the last-valid parsed DOM for the canvas overlay; the raw string still shows in the editor. No error toast — just don't crash.
+## Files touched
 
-## Mock generate
+- `src/components/editor/SvgCanvas.tsx` — rewrite pointer handling: window-level listeners, direct DOM mutation during drag, single `onChange` on pointerup, drag guard.
+- `src/components/editor/CodeEditor.tsx` — tighten height/min-h so the editor is always tall enough to focus and type into.
+- (Possibly) `src/routes/index.tsx` — add `min-h-0` on the code-panel inner div if the editor still collapses.
 
-`InputPanel` holds a hardcoded sample SVG string (a geometry rider: triangle with labeled vertices A/B/C, an altitude, angle marks, and a couple of `<text>` labels — every meaningful element has an `id`). "Generate Diagram" sets a 2s loading spinner on the button, then calls `onGenerate(sampleSvg)`.
+## Out of scope
 
-## Image drop zone
+- Undo/redo, multi-select, keyboard nudging, resize handles, rotation.
+- Snapping / grid.
+- Any change to the sample SVG or its section-heading comments.
 
-Per the clarification above: accept one image, show thumbnail + filename + clear button, keep the `File` in local state only. Generate still returns the mock SVG. Nothing leaves the browser.
+## Verification
 
-## Dependencies to add
-
-- `@uiw/react-codemirror`
-- `@codemirror/lang-xml`
-- `@codemirror/theme-one-dark`
-
-shadcn `Button`, `Textarea`, `Card`, `Tooltip` are already available in the template scaffold; I'll `npx shadcn` any that aren't.
-
-## Styling
-
-Monochrome surface using existing tokens (`background`, `card`, `border`, `muted-foreground`). Accent for active states uses `primary` (already a deep near-black; I'll tune `--primary` to a deep blue in `src/styles.css` so active/selected states pop as requested). Selection outline: 1.5px dashed `primary`. Recording indicator: `destructive` token with a `animate-pulse`.
-
-## Out of scope (explicit)
-
-- No Supabase, no AI gateway, no persistence.
-- No resizable panels, no undo/redo, no multi-select, no keyboard nudging (easy follow-ups).
-- No SVG validation UI beyond "canvas stops updating on unparseable input".
-
-## Deliverables checklist
-
-- [ ] `src/routes/index.tsx` replaced (placeholder removed) with editor + route `head()`.
-- [ ] Six components under `src/components/editor/`.
-- [ ] `src/lib/svg/parse.ts` helpers.
-- [ ] CodeMirror deps installed.
-- [ ] `--primary` retuned to deep blue in `src/styles.css`.
-- [ ] Manual verification: type in code → canvas updates; drag a label → code updates; mic appends transcript; drop image → thumbnail shows; Generate loads sample after 2s.
+- Drag `label-A`, `label-B`, `label-C`, `label-D`, `label-beta` around — motion is smooth, code updates once on release, selection outline follows.
+- Click into the code panel, edit an `x=` on a label, tab out — canvas updates.
+- Drag a label, then immediately edit its `y=` in code — no cursor jump, no lost focus.

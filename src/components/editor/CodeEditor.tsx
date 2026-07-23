@@ -10,7 +10,7 @@ type Props = {
 
 export function CodeEditor({ value, onChange }: Props) {
   return (
-    <div className="h-full w-full overflow-hidden bg-[#282c34]">
+    <div className="h-full min-h-0 w-full overflow-hidden bg-[#282c34] [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto">
       <CodeMirror
         value={value}
         theme={oneDark}
