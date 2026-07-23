@@ -51,7 +51,6 @@ export function CodeEditor({ value, onChange, highlightId }: Props) {
       return;
     }
     const doc = view.state.doc.toString();
-    // Find `id="highlightId"` (or single-quoted).
     const re = new RegExp(
       `id\\s*=\\s*["']${highlightId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["']`,
     );
@@ -67,9 +66,8 @@ export function CodeEditor({ value, onChange, highlightId }: Props) {
         setHighlightLine.of(line.number),
         EditorView.scrollIntoView(line.from, { y: "center" }),
       ],
-      selection: EditorSelection.cursor(line.from),
     });
-  }, [highlightId, value]);
+  }, [highlightId]);
 
   return (
     <div className="h-full min-h-0 w-full overflow-hidden bg-[#282c34] [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto">
