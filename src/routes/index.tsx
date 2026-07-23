@@ -70,7 +70,7 @@ function EditorPage() {
             </span>
           </header>
           <div className="min-h-0 flex-1">
-            <CodeEditor value={svg} onChange={setSvg} />
+            <CodeEditor value={svg} onChange={setSvg} highlightId={selectedId} />
           </div>
         </section>
       </main>
