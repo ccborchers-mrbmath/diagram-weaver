@@ -3,7 +3,7 @@ import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { xml } from "@codemirror/lang-xml";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { EditorView, Decoration, type DecorationSet } from "@codemirror/view";
-import { StateField, StateEffect, EditorSelection } from "@codemirror/state";
+import { StateField, StateEffect } from "@codemirror/state";
 
 type Props = {
   value: string;
