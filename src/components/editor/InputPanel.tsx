@@ -1,26 +1,51 @@
 import { useState } from "react";
 import { Loader2, Sparkles } from "lucide-react";
+import { toast } from "sonner";
+import { useServerFn } from "@tanstack/react-start";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { VoiceButton } from "./VoiceButton";
 import { ImageDropzone } from "./ImageDropzone";
-import { SAMPLE_SVG } from "@/lib/svg/sample";
+import { generateSvg } from "@/lib/generate-svg.functions";
 
 type Props = {
   onGenerate: (svg: string) => void;
 };
 
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result as string);
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
+  });
+}
+
 export function InputPanel({ onGenerate }: Props) {
   const [prompt, setPrompt] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
+  const callGenerate = useServerFn(generateSvg);
 
-  const handleGenerate = () => {
+  const handleGenerate = async () => {
+    const trimmed = prompt.trim();
+    if (!trimmed) {
+      toast.error("Enter a prompt describing the diagram.");
+      return;
+    }
     setLoading(true);
-    window.setTimeout(() => {
-      onGenerate(SAMPLE_SVG);
+    try {
+      const imageDataUrl = file ? await fileToDataUrl(file) : undefined;
+      const { svg } = await callGenerate({ data: { prompt: trimmed, imageDataUrl } });
+      onGenerate(svg);
+      toast.success("Diagram generated");
+    } catch (err) {
+      console.error(err);
+      const msg = err instanceof Error ? err.message : "Failed to generate diagram";
+      toast.error(msg);
+    } finally {
       setLoading(false);
-    }, 2000);
+    }
   };
 
   const appendTranscript = (t: string) => {
@@ -75,7 +100,7 @@ export function InputPanel({ onGenerate }: Props) {
           )}
         </Button>
         <p className="mt-2 text-center text-[11px] text-muted-foreground">
-          Prototype uses a mock response.
+          Powered by Lovable AI.
         </p>
       </div>
     </aside>
