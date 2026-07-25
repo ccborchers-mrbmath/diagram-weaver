@@ -18,6 +18,59 @@ export function serializeSvg(root: SVGSVGElement): string {
   return new XMLSerializer().serializeToString(root);
 }
 
+// Leaf graphical elements that should be individually selectable/draggable.
+const SELECTABLE_TAGS = new Set([
+  "path",
+  "line",
+  "polyline",
+  "polygon",
+  "circle",
+  "ellipse",
+  "rect",
+  "text",
+  "image",
+  "use",
+]);
+
+/** Give every id-less graphical element a stable, document-order id so the
+ *  canvas tools can target it. Full-canvas background rects are skipped so the
+ *  backdrop stays a click-to-deselect target. Returns true if anything changed. */
+export function ensureIdsOnSvg(root: SVGSVGElement): boolean {
+  const used = new Set<string>();
+  root.querySelectorAll("[id]").forEach((el) => {
+    const id = el.getAttribute("id");
+    if (id) used.add(id);
+  });
+  let counter = 0;
+  let changed = false;
+  root.querySelectorAll("*").forEach((el) => {
+    const tag = el.tagName.toLowerCase();
+    if (!SELECTABLE_TAGS.has(tag) || el.getAttribute("id")) return;
+    if (tag === "rect") {
+      const w = el.getAttribute("width") ?? "";
+      const h = el.getAttribute("height") ?? "";
+      if (w.includes("%") || h.includes("%")) return; // background fill
+    }
+    let id: string;
+    do {
+      id = `el-${++counter}`;
+    } while (used.has(id));
+    used.add(id);
+    el.setAttribute("id", id);
+    changed = true;
+  });
+  return changed;
+}
+
+/** Parse an SVG string, inject ids for id-less graphical elements, and
+ *  re-serialize. Returns the source unchanged if it doesn't parse or needs no
+ *  ids — so it never clobbers invalid, mid-edit markup. */
+export function assignMissingIds(source: string): string {
+  const root = parseSvg(source);
+  if (!root) return source;
+  return ensureIdsOnSvg(root) ? serializeSvg(root) : source;
+}
+
 export function collectDraggableIds(root: SVGSVGElement): string[] {
   const ids: string[] = [];
   root.querySelectorAll("[id]").forEach((el) => {
@@ -42,8 +95,7 @@ export function translateElementById(
 
   const tag = el.tagName.toLowerCase();
   const num = (name: string) => parseFloat(el.getAttribute(name) || "0") || 0;
-  const set = (name: string, v: number) =>
-    el.setAttribute(name, roundStr(v));
+  const set = (name: string, v: number) => el.setAttribute(name, roundStr(v));
 
   switch (tag) {
     case "text":
@@ -78,9 +130,7 @@ export function translateElementById(
         ty = parseFloat(match[2]);
         rest = existing.replace(match[0], "").trim();
       }
-      const next = `translate(${roundStr(tx + dx)}, ${roundStr(ty + dy)})${
-        rest ? " " + rest : ""
-      }`;
+      const next = `translate(${roundStr(tx + dx)}, ${roundStr(ty + dy)})${rest ? " " + rest : ""}`;
       el.setAttribute("transform", next);
     }
   }

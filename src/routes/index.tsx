@@ -7,6 +7,7 @@ import { InputPanel } from "@/components/editor/InputPanel";
 import { SvgCanvas } from "@/components/editor/SvgCanvas";
 import { CodeEditor } from "@/components/editor/CodeEditor";
 import { SAMPLE_SVG } from "@/lib/svg/sample";
+import { assignMissingIds } from "@/lib/svg/parse";
 import { useFileSync, type SaveStatus } from "@/lib/useFileSync";
 
 export const Route = createFileRoute("/")({
@@ -36,9 +37,12 @@ function EditorPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Inject ids for id-less shapes as soon as an SVG is loaded, so pasted /
+  // imported / opened files are immediately tool-editable and the ids show in
+  // the code — not only after the first drag.
   const loadSvg = useCallback((text: string) => {
     setSelectedId(null);
-    setSvg(text);
+    setSvg(assignMissingIds(text));
   }, []);
   const fileSync = useFileSync(svg, loadSvg);
 
@@ -62,7 +66,7 @@ function EditorPage() {
       return;
     }
     setSelectedId(null);
-    setSvg(text.trim());
+    setSvg(assignMissingIds(text.trim()));
     toast.success(`Imported ${file.name}`);
   };
 

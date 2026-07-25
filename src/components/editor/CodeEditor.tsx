@@ -1,9 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { xml } from "@codemirror/lang-xml";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { EditorView, Decoration, type DecorationSet } from "@codemirror/view";
 import { StateField, StateEffect } from "@codemirror/state";
+import { assignMissingIds } from "@/lib/svg/parse";
 
 type Props = {
   value: string;
@@ -42,6 +43,26 @@ const lineHighlightField = StateField.define<DecorationSet>({
 
 export function CodeEditor({ value, onChange, highlightId }: Props) {
   const cmRef = useRef<ReactCodeMirrorRef>(null);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  // After a paste, inject ids into id-less shapes so pasted SVG is immediately
+  // tool-editable and the ids appear in the code. Runs once CodeMirror has
+  // applied the paste; leaves the doc untouched if it isn't a complete SVG.
+  const pasteHandler = useMemo(
+    () =>
+      EditorView.domEventHandlers({
+        paste(_event, view) {
+          setTimeout(() => {
+            const doc = view.state.doc.toString();
+            const next = assignMissingIds(doc);
+            if (next !== doc) onChangeRef.current(next);
+          }, 0);
+          return false;
+        },
+      }),
+    [],
+  );
 
   useEffect(() => {
     const view = cmRef.current?.view;
@@ -75,7 +96,7 @@ export function CodeEditor({ value, onChange, highlightId }: Props) {
         ref={cmRef}
         value={value}
         theme={oneDark}
-        extensions={[xml(), EditorView.lineWrapping, lineHighlightField]}
+        extensions={[xml(), EditorView.lineWrapping, lineHighlightField, pasteHandler]}
         basicSetup={{
           lineNumbers: true,
           highlightActiveLine: false,
