@@ -1,12 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useRef, useState } from "react";
-import { Download, Upload } from "lucide-react";
+import { useCallback, useRef, useState } from "react";
+import { Download, FolderOpen, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { InputPanel } from "@/components/editor/InputPanel";
 import { SvgCanvas } from "@/components/editor/SvgCanvas";
 import { CodeEditor } from "@/components/editor/CodeEditor";
 import { SAMPLE_SVG } from "@/lib/svg/sample";
+import { assignMissingIds } from "@/lib/svg/parse";
+import { useFileSync, type SaveStatus } from "@/lib/useFileSync";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -35,6 +37,15 @@ function EditorPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Inject ids for id-less shapes as soon as an SVG is loaded, so pasted /
+  // imported / opened files are immediately tool-editable and the ids show in
+  // the code — not only after the first drag.
+  const loadSvg = useCallback((text: string) => {
+    setSelectedId(null);
+    setSvg(assignMissingIds(text));
+  }, []);
+  const fileSync = useFileSync(svg, loadSvg);
+
   const handleDownload = () => {
     const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -55,7 +66,7 @@ function EditorPage() {
       return;
     }
     setSelectedId(null);
-    setSvg(text.trim());
+    setSvg(assignMissingIds(text.trim()));
     toast.success(`Imported ${file.name}`);
   };
 
@@ -92,9 +103,28 @@ function EditorPage() {
 
         <section className="flex min-h-0 flex-[2] flex-col">
           <header className="flex items-center justify-between gap-2 border-b border-border bg-card px-4 py-2">
-            <h2 className="text-sm font-medium">SVG Code</h2>
-            <div className="flex items-center gap-2">
-              <span className="hidden text-xs text-muted-foreground sm:inline">
+            <div className="flex min-w-0 items-center gap-2">
+              <h2 className="shrink-0 text-sm font-medium">SVG Code</h2>
+              {fileSync.fileName && (
+                <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                  <span className="truncate font-mono text-foreground">{fileSync.fileName}</span>
+                  <span className={statusClass(fileSync.status)}>
+                    {statusLabel(fileSync.status)}
+                  </span>
+                  <button
+                    type="button"
+                    title="Close file (stop autosaving)"
+                    aria-label="Close file"
+                    onClick={fileSync.close}
+                    className="rounded p-0.5 hover:bg-accent"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              )}
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <span className="hidden text-xs text-muted-foreground lg:inline">
                 {svg.length.toLocaleString()} chars
               </span>
               <input
@@ -104,11 +134,24 @@ function EditorPage() {
                 className="hidden"
                 onChange={handleImportFile}
               />
+              {fileSync.supported && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1.5 px-2 text-xs"
+                  onClick={fileSync.open}
+                  title="Open an SVG file and autosave edits back to it"
+                >
+                  <FolderOpen className="h-3.5 w-3.5" />
+                  Open file
+                </Button>
+              )}
               <Button
                 variant="outline"
                 size="sm"
                 className="h-7 gap-1.5 px-2 text-xs"
                 onClick={() => fileInputRef.current?.click()}
+                title="Load an SVG into the editor (no autosave)"
               >
                 <Upload className="h-3.5 w-3.5" />
                 Import
@@ -118,9 +161,10 @@ function EditorPage() {
                 size="sm"
                 className="h-7 gap-1.5 px-2 text-xs"
                 onClick={handleDownload}
+                title="Download the current SVG"
               >
                 <Download className="h-3.5 w-3.5" />
-                Download SVG
+                Download
               </Button>
             </div>
           </header>
@@ -131,4 +175,23 @@ function EditorPage() {
       </main>
     </div>
   );
+}
+
+function statusLabel(status: SaveStatus): string {
+  switch (status) {
+    case "saving":
+      return "Saving…";
+    case "saved":
+      return "Saved";
+    case "error":
+      return "Save failed";
+    default:
+      return "";
+  }
+}
+
+function statusClass(status: SaveStatus): string {
+  if (status === "error") return "text-destructive";
+  if (status === "saving") return "text-muted-foreground";
+  return "text-green-600 dark:text-green-500";
 }

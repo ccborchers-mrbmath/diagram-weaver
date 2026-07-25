@@ -9,7 +9,7 @@ import {
   Plus,
   type LucideIcon,
 } from "lucide-react";
-import { parseSvg } from "@/lib/svg/parse";
+import { ensureIdsOnSvg, parseSvg } from "@/lib/svg/parse";
 
 type Props = {
   svgSource: string;
@@ -30,45 +30,6 @@ type Popup = { x: number; y: number; below: boolean };
 const RESIZE_STEP = 1.12; // per-click enlarge/shrink factor for the mini-toolbar
 // Shapes whose stroke should stay a fixed weight when the element is scaled.
 const STROKED_TAGS = new Set(["path", "line", "polyline", "polygon", "circle", "ellipse", "rect"]);
-
-// Leaf graphical elements that should be individually selectable/draggable.
-const SELECTABLE_TAGS = new Set([
-  "path",
-  "line",
-  "polyline",
-  "polygon",
-  "circle",
-  "ellipse",
-  "rect",
-  "text",
-  "image",
-  "use",
-]);
-
-// Pasted or imported SVGs usually have no ids, so the select/drag/tool handlers
-// (which target [id] elements) can't touch them. Give every id-less graphical
-// element a stable, document-order id so the tools work on any SVG. Full-canvas
-// background rects are skipped so the backdrop stays a click-to-deselect target.
-function ensureEditableIds(svg: SVGSVGElement): void {
-  const used = new Set<string>();
-  svg.querySelectorAll("[id]").forEach((el) => used.add(el.id));
-  let counter = 0;
-  svg.querySelectorAll<SVGElement>("*").forEach((el) => {
-    const tag = el.tagName.toLowerCase();
-    if (!SELECTABLE_TAGS.has(tag) || el.id) return;
-    if (tag === "rect") {
-      const w = el.getAttribute("width") ?? "";
-      const h = el.getAttribute("height") ?? "";
-      if (w.includes("%") || h.includes("%")) return; // background fill
-    }
-    let id: string;
-    do {
-      id = `el-${++counter}`;
-    } while (used.has(id));
-    used.add(id);
-    el.setAttribute("id", id);
-  });
-}
 
 // Bounding box of `el` in the SVG root's user coordinate system, including the
 // element's own transform. getBBox() alone is local (pre-transform), which is
@@ -285,7 +246,7 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
       (svg as SVGSVGElement).style.display = "block";
       (svg as SVGSVGElement).style.maxHeight = "100%";
       (svg as SVGSVGElement).style.userSelect = "none";
-      ensureEditableIds(svg as SVGSVGElement);
+      ensureIdsOnSvg(svg as SVGSVGElement);
     }
   }, [renderSource]);
 
