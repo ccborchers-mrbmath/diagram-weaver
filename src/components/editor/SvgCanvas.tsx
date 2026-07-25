@@ -28,6 +28,8 @@ const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
 
 type Popup = { x: number; y: number; below: boolean };
 const RESIZE_STEP = 1.12; // per-click enlarge/shrink factor for the mini-toolbar
+// Shapes whose stroke should stay a fixed weight when the element is scaled.
+const STROKED_TAGS = new Set(["path", "line", "polyline", "polygon", "circle", "ellipse", "rect"]);
 
 // Bounding box of `el` in the SVG root's user coordinate system, including the
 // element's own transform. getBBox() alone is local (pre-transform), which is
@@ -147,6 +149,11 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
   const resizeBy = useCallback(
     (factor: number) => {
       applyToSelected((_svg, el, base) => {
+        // Keep line weight constant when scaling arcs / lines / outlines — the
+        // transform would otherwise stretch the stroke too.
+        if (STROKED_TAGS.has(el.tagName.toLowerCase())) {
+          el.setAttribute("vector-effect", "non-scaling-stroke");
+        }
         const bb = el.getBBox();
         const vc = base.transformPoint(new DOMPoint(bb.x + bb.width / 2, bb.y + bb.height / 2));
         return new DOMMatrix()
