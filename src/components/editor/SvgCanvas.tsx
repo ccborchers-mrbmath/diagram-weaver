@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Maximize2, Minus, Plus } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  Maximize2,
+  Minus,
+  Plus,
+  type LucideIcon,
+} from "lucide-react";
 import { parseSvg } from "@/lib/svg/parse";
 
 type Props = {
@@ -17,13 +26,57 @@ const MAX_SCALE = 8;
 const IDENTITY: Transform = { scale: 1, tx: 0, ty: 0 };
 const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
 
+type Popup = { x: number; y: number; below: boolean };
+const RESIZE_STEP = 1.12; // per-click enlarge/shrink factor for the mini-toolbar
+
+// Bounding box of `el` in the SVG root's user coordinate system, including the
+// element's own transform. getBBox() alone is local (pre-transform), which is
+// wrong once the mini-toolbar has scaled/translated the element.
+function userSpaceBBox(svg: SVGSVGElement, el: SVGGraphicsElement): BBox | null {
+  try {
+    const bb = el.getBBox();
+    const screen = el.getScreenCTM();
+    const root = svg.getScreenCTM();
+    if (!screen || !root) return { x: bb.x, y: bb.y, width: bb.width, height: bb.height };
+    const m = root.inverse().multiply(screen);
+    const corners = [
+      [bb.x, bb.y],
+      [bb.x + bb.width, bb.y],
+      [bb.x, bb.y + bb.height],
+      [bb.x + bb.width, bb.y + bb.height],
+    ].map(([x, y]) => {
+      const p = svg.createSVGPoint();
+      p.x = x;
+      p.y = y;
+      return p.matrixTransform(m);
+    });
+    const xs = corners.map((p) => p.x);
+    const ys = corners.map((p) => p.y);
+    const minX = Math.min(...xs);
+    const minY = Math.min(...ys);
+    return { x: minX, y: minY, width: Math.max(...xs) - minX, height: Math.max(...ys) - minY };
+  } catch {
+    return null;
+  }
+}
+
 export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [viewBox, setViewBox] = useState<string>("0 0 400 300");
   const [selectionBox, setSelectionBox] = useState<BBox | null>(null);
+  const [popup, setPopup] = useState<Popup | null>(null);
   const [transform, setTransform] = useState<Transform>(IDENTITY);
   const draggingRef = useRef(false);
+
+  // Nudge step in user units, ~2% of the smaller viewBox dimension so it feels
+  // consistent across diagrams drawn at different scales.
+  const nudgeStep = useMemo(() => {
+    const p = viewBox.split(/[\s,]+/).map(Number);
+    const w = p[2] || 400;
+    const h = p[3] || 300;
+    return Math.max(2, Math.round(Math.min(w, h) * 0.02));
+  }, [viewBox]);
 
   // Zoom toward a screen anchor (cursor or viewport centre), keeping the point
   // under the anchor fixed. getScreenCTM() reflects this CSS transform, so
@@ -56,6 +109,53 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
   );
 
   const resetZoom = useCallback(() => setTransform(IDENTITY), []);
+
+  // Mini-toolbar operations. Both compose an SVG matrix transform onto the
+  // selected element (works uniformly for arcs, labels, lines, groups) and push
+  // the serialized result back up, so the change lands in the code editor too.
+  const applyToSelected = useCallback(
+    (build: (svg: SVGSVGElement, el: SVGGraphicsElement, base: DOMMatrix) => DOMMatrix) => {
+      const host = hostRef.current;
+      if (!host || !selectedId) return;
+      const svg = host.querySelector("svg") as SVGSVGElement | null;
+      const el = host.querySelector(`#${cssEscape(selectedId)}`) as SVGGraphicsElement | null;
+      if (!svg || !el) return;
+      const consolidated = el.transform?.baseVal?.consolidate?.();
+      const base = consolidated ? DOMMatrix.fromMatrix(consolidated.matrix) : new DOMMatrix();
+      const m = build(svg, el, base);
+      el.setAttribute("transform", `matrix(${m.a} ${m.b} ${m.c} ${m.d} ${m.e} ${m.f})`);
+      onChange(new XMLSerializer().serializeToString(svg));
+    },
+    [selectedId, onChange],
+  );
+
+  // Translate in the SVG root's user space (+y is down). Pre-multiplying keeps
+  // the nudge in screen orientation regardless of the element's own transform.
+  const nudge = useCallback(
+    (dx: number, dy: number) => {
+      applyToSelected((_svg, _el, base) => new DOMMatrix().translate(dx, dy).multiply(base));
+    },
+    [applyToSelected],
+  );
+
+  // Scale about the element's current visual centre, so it grows in place.
+  const resizeBy = useCallback(
+    (factor: number) => {
+      applyToSelected((svg, el, base) => {
+        const bb = el.getBBox();
+        const c = svg.createSVGPoint();
+        c.x = bb.x + bb.width / 2;
+        c.y = bb.y + bb.height / 2;
+        const vc = c.matrixTransform(base);
+        return new DOMMatrix()
+          .translate(vc.x, vc.y)
+          .scale(factor)
+          .translate(-vc.x, -vc.y)
+          .multiply(base);
+      });
+    },
+    [applyToSelected],
+  );
 
   // Keep the latest transform in a ref so the pan gesture can snapshot it at
   // pointer-down without re-subscribing.
@@ -140,31 +240,40 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
     }
   }, [renderSource]);
 
-  // Recompute selection bounding box whenever selection or source changes.
-  const recomputeSelectionBox = () => {
-    if (!selectedId) {
-      setSelectionBox(null);
-      return;
-    }
+  // Recompute the selection outline (user space) and the mini-toolbar anchor
+  // (container pixels) whenever selection, source, or zoom/pan changes.
+  const recomputeOverlays = () => {
     const host = hostRef.current;
-    if (!host) return;
-    const el = host.querySelector(`#${cssEscape(selectedId)}`) as SVGGraphicsElement | null;
-    if (!el || typeof el.getBBox !== "function") {
+    const container = containerRef.current;
+    if (!selectedId || !host || !container) {
       setSelectionBox(null);
+      setPopup(null);
       return;
     }
-    try {
-      const b = el.getBBox();
-      setSelectionBox({ x: b.x, y: b.y, width: b.width, height: b.height });
-    } catch {
+    const svg = host.querySelector("svg") as SVGSVGElement | null;
+    const el = host.querySelector(`#${cssEscape(selectedId)}`) as SVGGraphicsElement | null;
+    if (!svg || !el || typeof el.getBBox !== "function") {
       setSelectionBox(null);
+      setPopup(null);
+      return;
+    }
+    setSelectionBox(userSpaceBBox(svg, el));
+    try {
+      const r = el.getBoundingClientRect();
+      const cr = container.getBoundingClientRect();
+      const topY = r.top - cr.top;
+      const bottomY = r.bottom - cr.top;
+      const below = topY < 116; // not enough room above → drop the toolbar below
+      setPopup({ x: r.left - cr.left + r.width / 2, y: below ? bottomY : topY, below });
+    } catch {
+      setPopup(null);
     }
   };
 
   useLayoutEffect(() => {
-    recomputeSelectionBox();
+    recomputeOverlays();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId, renderSource]);
+  }, [selectedId, renderSource, transform]);
 
   // Attach pointer handlers to every [id] element for select + drag.
   useEffect(() => {
@@ -207,6 +316,7 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
 
         draggingRef.current = true;
         el.style.cursor = "grabbing";
+        setPopup(null); // hide the mini-toolbar during a drag; it resyncs on drop
 
         let rafId = 0;
         let pending: { dx: number; dy: number } | null = null;
@@ -216,12 +326,8 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
           if (!pending) return;
           writePositionAttrs(el, tag, origin, pending.dx, pending.dy);
           // Update selection outline live.
-          try {
-            const b = (el as SVGGraphicsElement).getBBox();
-            setSelectionBox({ x: b.x, y: b.y, width: b.width, height: b.height });
-          } catch {
-            /* noop */
-          }
+          const box = userSpaceBBox(svg, el as SVGGraphicsElement);
+          if (box) setSelectionBox(box);
         };
 
         const onMove = (ev: PointerEvent) => {
@@ -335,7 +441,65 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
       <div className="pointer-events-none absolute bottom-3 right-14 rounded bg-card/95 px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground shadow-sm backdrop-blur">
         {zoomPct}%
       </div>
+
+      {/* Per-element mini-toolbar: nudge to translate, +/− to resize. */}
+      {popup && (
+        <div
+          className="absolute z-10"
+          style={{
+            left: popup.x,
+            top: popup.y,
+            transform: popup.below
+              ? "translate(-50%, 10px)"
+              : "translate(-50%, calc(-100% - 10px))",
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center gap-1 rounded-lg border border-border bg-card/95 p-1 text-foreground shadow-md backdrop-blur">
+            <div className="grid grid-cols-[1.5rem_1.5rem_1.5rem] grid-rows-[1.5rem_1.5rem_1.5rem] place-items-center gap-0.5">
+              <span />
+              <ToolButton label="Move up" icon={ArrowUp} onClick={() => nudge(0, -nudgeStep)} />
+              <span />
+              <ToolButton label="Move left" icon={ArrowLeft} onClick={() => nudge(-nudgeStep, 0)} />
+              <span />
+              <ToolButton
+                label="Move right"
+                icon={ArrowRight}
+                onClick={() => nudge(nudgeStep, 0)}
+              />
+              <span />
+              <ToolButton label="Move down" icon={ArrowDown} onClick={() => nudge(0, nudgeStep)} />
+              <span />
+            </div>
+            <div className="mx-0.5 h-9 w-px bg-border" />
+            <ToolButton label="Shrink" icon={Minus} onClick={() => resizeBy(1 / RESIZE_STEP)} />
+            <ToolButton label="Enlarge" icon={Plus} onClick={() => resizeBy(RESIZE_STEP)} />
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+function ToolButton({
+  label,
+  icon: Icon,
+  onClick,
+}: {
+  label: string;
+  icon: LucideIcon;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      onClick={onClick}
+      className="flex h-6 w-6 items-center justify-center rounded hover:bg-accent"
+    >
+      <Icon className="h-3.5 w-3.5" />
+    </button>
   );
 }
 

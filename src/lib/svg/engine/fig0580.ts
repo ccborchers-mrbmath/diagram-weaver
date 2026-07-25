@@ -90,15 +90,21 @@ export type AngleLabel = { v: Pt; pos: Pt; text: string; r: number };
 
 export class Fig0580 extends Fig {
   angleLabels: AngleLabel[] = [];
+  private arcSeq = 0;
 
   // ---------- angle arcs (overrides base) ----------
   arc(
     v: Pt,
     a1: number,
     a2: number,
-    opts: { label?: string; r?: number; lblR?: number; italic?: boolean } = {},
+    opts: { label?: string; r?: number; lblR?: number; italic?: boolean; id?: string } = {},
   ): void {
     const { label, r = 46, lblR, italic = false } = opts;
+    // Auto-id the arc and its label so both are selectable/draggable on the
+    // canvas even though templates don't name every angle explicitly.
+    this.arcSeq += 1;
+    const arcId = opts.id ?? `angle-arc-${this.arcSeq}`;
+    const labelId = `angle-label-${this.arcSeq}`;
     const p1 = add(v, pol(r, a1));
     const p2 = add(v, pol(r, a2));
     const [x1, y1] = this.X(p1);
@@ -107,7 +113,7 @@ export class Fig0580 extends Fig {
     const sweep = span <= 180 ? 0 : 1;
     const large = span > 180 ? 1 : 0;
     this.push(
-      `<path d="M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${large} ${sweep} ${x2.toFixed(2)} ${y2.toFixed(2)}" ` +
+      `<path id="${arcId}" d="M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${large} ${sweep} ${x2.toFixed(2)} ${y2.toFixed(2)}" ` +
         `fill="none" stroke="${STROKE}" stroke-width="${LW_THIN}"/>`,
     );
     if (label) {
@@ -119,6 +125,7 @@ export class Fig0580 extends Fig {
         italic,
         size: FS_ANGLE,
         vcentre: true,
+        id: labelId,
       });
       this.angleLabels.push({ v, pos, text: label, r: d });
     }
