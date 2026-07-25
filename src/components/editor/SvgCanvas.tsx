@@ -57,6 +57,44 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
 
   const resetZoom = useCallback(() => setTransform(IDENTITY), []);
 
+  // Keep the latest transform in a ref so the pan gesture can snapshot it at
+  // pointer-down without re-subscribing.
+  const transformRef = useRef(transform);
+  transformRef.current = transform;
+
+  // Middle-button drag pans the canvas from anywhere, including over elements
+  // (their handlers ignore non-primary buttons, so the event reaches here).
+  const panRef = useRef(false);
+  const onContainerPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 1 || panRef.current) return;
+    e.preventDefault();
+    const el = containerRef.current;
+    if (!el) return;
+    panRef.current = true;
+    el.style.cursor = "grabbing";
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const base = transformRef.current;
+
+    const onMove = (ev: PointerEvent) => {
+      setTransform({
+        scale: base.scale,
+        tx: base.tx + (ev.clientX - startX),
+        ty: base.ty + (ev.clientY - startY),
+      });
+    };
+    const onUp = () => {
+      panRef.current = false;
+      el.style.cursor = "";
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  }, []);
+
   // Ctrl + wheel (and trackpad pinch, which also sets ctrlKey) zooms toward the
   // cursor. Registered non-passive so we can preventDefault the browser zoom.
   useEffect(() => {
@@ -143,6 +181,8 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
       el.style.pointerEvents = "all";
 
       const onPointerDown = (e: PointerEvent) => {
+        // Only the primary (left) button drags elements; middle button pans.
+        if (e.button !== 0) return;
         e.stopPropagation();
         e.preventDefault();
         const id = el.getAttribute("id");
@@ -211,7 +251,11 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
       cleanups.push(() => el.removeEventListener("pointerdown", onPointerDown));
     }
 
-    const onBgDown = () => onSelect(null);
+    const onBgDown = (e: PointerEvent) => {
+      // Ignore middle-button (panning) so a pan doesn't clear the selection.
+      if (e.button !== 0) return;
+      onSelect(null);
+    };
     svg.addEventListener("pointerdown", onBgDown);
     cleanups.push(() => svg.removeEventListener("pointerdown", onBgDown));
 
@@ -223,6 +267,10 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
   return (
     <div
       ref={containerRef}
+      onPointerDown={onContainerPointerDown}
+      onAuxClick={(e) => {
+        if (e.button === 1) e.preventDefault();
+      }}
       className="relative h-full w-full overflow-hidden bg-[color:var(--canvas-bg)]"
     >
       <div
