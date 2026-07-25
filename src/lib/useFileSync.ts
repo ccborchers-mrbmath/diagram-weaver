@@ -29,6 +29,27 @@ type WindowWithFS = Window &
 
 const SVG_TYPES = [{ description: "SVG image", accept: { "image/svg+xml": [".svg"] } }];
 
+const isAbort = (e: unknown): boolean => e instanceof DOMException && e.name === "AbortError";
+
+const inIframe = (): boolean => {
+  try {
+    return window.self !== window.top;
+  } catch {
+    return true; // access denied → we're in a cross-origin frame
+  }
+};
+
+/** Human-readable reason a file-picker call failed (never called for a plain
+ *  user cancel). Cross-origin iframes — like the embedded Lovable preview —
+ *  block the picker, so point the user at opening the app in its own tab. */
+function describeFsError(e: unknown): string {
+  const name = e instanceof DOMException ? e.name : "";
+  if (name === "SecurityError" || inIframe()) {
+    return "The file picker is blocked inside embedded previews. Open the app in its own browser tab (Chrome or Edge), then try again — or use Import / Download.";
+  }
+  return "Couldn't open the file picker in this browser. Use Import / Download instead.";
+}
+
 export type SaveStatus = "idle" | "saving" | "saved" | "error";
 
 export type FileSync = {
@@ -47,7 +68,11 @@ export type FileSync = {
  * that same file automatically, debounced. Falls back to unsupported=false on
  * browsers without the API (Firefox / Safari), where import/download is used.
  */
-export function useFileSync(content: string, onLoad: (text: string) => void): FileSync {
+export function useFileSync(
+  content: string,
+  onLoad: (text: string) => void,
+  onError?: (message: string) => void,
+): FileSync {
   const win = typeof window !== "undefined" ? (window as WindowWithFS) : undefined;
   const supported = !!win?.showOpenFilePicker;
 
@@ -100,10 +125,10 @@ export function useFileSync(content: string, onLoad: (text: string) => void): Fi
       setStatus("saved");
       onLoad(text);
       await ensureWritePermission(h); // prompt up front so autosave is silent
-    } catch {
-      // user cancelled the picker — ignore
+    } catch (e) {
+      if (!isAbort(e)) onError?.(describeFsError(e));
     }
-  }, [win, onLoad]);
+  }, [win, onLoad, onError]);
 
   const saveAs = useCallback(async () => {
     if (!win?.showSaveFilePicker) return;
@@ -112,10 +137,10 @@ export function useFileSync(content: string, onLoad: (text: string) => void): Fi
       handleRef.current = h;
       setFileName(h.name);
       await write(content);
-    } catch {
-      // cancelled — ignore
+    } catch (e) {
+      if (!isAbort(e)) onError?.(describeFsError(e));
     }
-  }, [win, content, write]);
+  }, [win, content, write, onError]);
 
   const saveNow = useCallback(() => {
     if (handleRef.current) void write(content);

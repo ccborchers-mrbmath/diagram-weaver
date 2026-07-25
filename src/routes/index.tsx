@@ -44,7 +44,8 @@ function EditorPage() {
     setSelectedId(null);
     setSvg(assignMissingIds(text));
   }, []);
-  const fileSync = useFileSync(svg, loadSvg);
+  const notifyError = useCallback((msg: string) => toast.error(msg), []);
+  const fileSync = useFileSync(svg, loadSvg, notifyError);
 
   const handleDownload = () => {
     const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
