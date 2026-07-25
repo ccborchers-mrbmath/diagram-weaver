@@ -23,7 +23,7 @@ export const Route = createFileRoute("/")({
       {
         property: "og:description",
         content:
-          "A split-screen workspace for math teachers to draft, drag, and hand-edit SVG diagrams.",
+          "Generate and refine mathematical SVG diagrams with a bidirectional visual canvas and code editor.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },

@@ -79,14 +79,18 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Lovable App" },
-      { name: "description", content: "Lovable Generated Project" },
+      { title: "SVG Math Diagram Editor" },
+      { name: "description", content: "Generate and refine mathematical SVG diagrams with a bidirectional visual canvas and code editor." },
       { name: "author", content: "Lovable" },
-      { property: "og:title", content: "Lovable App" },
-      { property: "og:description", content: "Lovable Generated Project" },
+      { property: "og:title", content: "SVG Math Diagram Editor" },
+      { property: "og:description", content: "Generate and refine mathematical SVG diagrams with a bidirectional visual canvas and code editor." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
       { name: "twitter:site", content: "@Lovable" },
+      { name: "twitter:title", content: "SVG Math Diagram Editor" },
+      { name: "twitter:description", content: "Generate and refine mathematical SVG diagrams with a bidirectional visual canvas and code editor." },
+      { property: "og:image", content: "https://storage.googleapis.com/gpt-engineer-file-uploads/attachments/og-images/c1657677-4370-430d-a3cc-3f137a738aeb" },
+      { name: "twitter:image", content: "https://storage.googleapis.com/gpt-engineer-file-uploads/attachments/og-images/c1657677-4370-430d-a3cc-3f137a738aeb" },
     ],
     links: [
       {
