@@ -69,14 +69,17 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
   const [transform, setTransform] = useState<Transform>(IDENTITY);
   const draggingRef = useRef(false);
 
-  // Nudge step in user units, ~2% of the smaller viewBox dimension so it feels
-  // consistent across diagrams drawn at different scales.
+  // Fine nudge step in user units (~0.4% of the smaller viewBox dimension) for
+  // micro-adjustments; hold Shift while clicking for a coarser move.
   const nudgeStep = useMemo(() => {
     const p = viewBox.split(/[\s,]+/).map(Number);
     const w = p[2] || 400;
     const h = p[3] || 300;
-    return Math.max(2, Math.round(Math.min(w, h) * 0.02));
+    return Math.max(1, Math.round(Math.min(w, h) * 0.004));
   }, [viewBox]);
+
+  // Shift held while clicking a nudge arrow moves in coarser steps.
+  const step = (e: React.MouseEvent) => nudgeStep * (e.shiftKey ? 6 : 1);
 
   // Zoom toward a screen anchor (cursor or viewport centre), keeping the point
   // under the anchor fixed. getScreenCTM() reflects this CSS transform, so
@@ -139,14 +142,13 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
   );
 
   // Scale about the element's current visual centre, so it grows in place.
+  // Note: the legacy SVGPoint.matrixTransform rejects a DOMMatrix, so map the
+  // centre with DOMMatrix.transformPoint instead.
   const resizeBy = useCallback(
     (factor: number) => {
-      applyToSelected((svg, el, base) => {
+      applyToSelected((_svg, el, base) => {
         const bb = el.getBBox();
-        const c = svg.createSVGPoint();
-        c.x = bb.x + bb.width / 2;
-        c.y = bb.y + bb.height / 2;
-        const vc = c.matrixTransform(base);
+        const vc = base.transformPoint(new DOMPoint(bb.x + bb.width / 2, bb.y + bb.height / 2));
         return new DOMMatrix()
           .translate(vc.x, vc.y)
           .scale(factor)
@@ -458,17 +460,29 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
           <div className="flex items-center gap-1 rounded-lg border border-border bg-card/95 p-1 text-foreground shadow-md backdrop-blur">
             <div className="grid grid-cols-[1.5rem_1.5rem_1.5rem] grid-rows-[1.5rem_1.5rem_1.5rem] place-items-center gap-0.5">
               <span />
-              <ToolButton label="Move up" icon={ArrowUp} onClick={() => nudge(0, -nudgeStep)} />
-              <span />
-              <ToolButton label="Move left" icon={ArrowLeft} onClick={() => nudge(-nudgeStep, 0)} />
-              <span />
               <ToolButton
-                label="Move right"
-                icon={ArrowRight}
-                onClick={() => nudge(nudgeStep, 0)}
+                label="Move up (hold Shift for larger steps)"
+                icon={ArrowUp}
+                onClick={(e) => nudge(0, -step(e))}
               />
               <span />
-              <ToolButton label="Move down" icon={ArrowDown} onClick={() => nudge(0, nudgeStep)} />
+              <ToolButton
+                label="Move left (hold Shift for larger steps)"
+                icon={ArrowLeft}
+                onClick={(e) => nudge(-step(e), 0)}
+              />
+              <span />
+              <ToolButton
+                label="Move right (hold Shift for larger steps)"
+                icon={ArrowRight}
+                onClick={(e) => nudge(step(e), 0)}
+              />
+              <span />
+              <ToolButton
+                label="Move down (hold Shift for larger steps)"
+                icon={ArrowDown}
+                onClick={(e) => nudge(0, step(e))}
+              />
               <span />
             </div>
             <div className="mx-0.5 h-9 w-px bg-border" />
@@ -488,7 +502,7 @@ function ToolButton({
 }: {
   label: string;
   icon: LucideIcon;
-  onClick: () => void;
+  onClick: (e: React.MouseEvent) => void;
 }) {
   return (
     <button
