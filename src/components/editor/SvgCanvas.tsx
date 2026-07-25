@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Maximize2, Minus, Plus } from "lucide-react";
 import { parseSvg } from "@/lib/svg/parse";
 
 type Props = {
@@ -10,11 +11,65 @@ type Props = {
 
 type BBox = { x: number; y: number; width: number; height: number };
 
+type Transform = { scale: number; tx: number; ty: number };
+const MIN_SCALE = 0.25;
+const MAX_SCALE = 8;
+const IDENTITY: Transform = { scale: 1, tx: 0, ty: 0 };
+const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
+
 export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [viewBox, setViewBox] = useState<string>("0 0 400 300");
   const [selectionBox, setSelectionBox] = useState<BBox | null>(null);
+  const [transform, setTransform] = useState<Transform>(IDENTITY);
   const draggingRef = useRef(false);
+
+  // Zoom toward a screen anchor (cursor or viewport centre), keeping the point
+  // under the anchor fixed. getScreenCTM() reflects this CSS transform, so
+  // element dragging stays pixel-accurate at any zoom.
+  const zoomAt = useCallback((anchorClientX: number, anchorClientY: number, factor: number) => {
+    const el = containerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const ax = anchorClientX - rect.left;
+    const ay = anchorClientY - rect.top;
+    setTransform((prev) => {
+      const nextScale = clampScale(prev.scale * factor);
+      const k = nextScale / prev.scale;
+      return {
+        scale: nextScale,
+        tx: ax - (ax - prev.tx) * k,
+        ty: ay - (ay - prev.ty) * k,
+      };
+    });
+  }, []);
+
+  const zoomByFactor = useCallback(
+    (factor: number) => {
+      const el = containerRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, factor);
+    },
+    [zoomAt],
+  );
+
+  const resetZoom = useCallback(() => setTransform(IDENTITY), []);
+
+  // Ctrl + wheel (and trackpad pinch, which also sets ctrlKey) zooms toward the
+  // cursor. Registered non-passive so we can preventDefault the browser zoom.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.1 : 1 / 1.1);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [zoomAt]);
 
   // Validate incoming source; keep last valid rendered string so typing invalid
   // XML in the code editor doesn't blow away the canvas.
@@ -55,9 +110,7 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
     }
     const host = hostRef.current;
     if (!host) return;
-    const el = host.querySelector(`#${cssEscape(selectedId)}`) as
-      | SVGGraphicsElement
-      | null;
+    const el = host.querySelector(`#${cssEscape(selectedId)}`) as SVGGraphicsElement | null;
     if (!el || typeof el.getBBox !== "function") {
       setSelectionBox(null);
       return;
@@ -165,28 +218,75 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
     return () => cleanups.forEach((c) => c());
   }, [renderSource, onChange, onSelect]);
 
+  const zoomPct = Math.round(transform.scale * 100);
+
   return (
-    <div className="relative h-full w-full bg-[color:var(--canvas-bg)] overflow-hidden">
-      <div ref={hostRef} className="h-full w-full [&>svg]:h-full [&>svg]:w-full" />
-      {selectionBox && (
-        <svg
-          className="pointer-events-none absolute inset-0 h-full w-full"
-          viewBox={viewBox}
-          preserveAspectRatio="xMidYMid meet"
+    <div
+      ref={containerRef}
+      className="relative h-full w-full overflow-hidden bg-[color:var(--canvas-bg)]"
+    >
+      <div
+        className="absolute inset-0"
+        style={{
+          transform: `translate(${transform.tx}px, ${transform.ty}px) scale(${transform.scale})`,
+          transformOrigin: "0 0",
+        }}
+      >
+        <div ref={hostRef} className="h-full w-full [&>svg]:h-full [&>svg]:w-full" />
+        {selectionBox && (
+          <svg
+            className="pointer-events-none absolute inset-0 h-full w-full"
+            viewBox={viewBox}
+            preserveAspectRatio="xMidYMid meet"
+          >
+            <rect
+              x={selectionBox.x - 4}
+              y={selectionBox.y - 4}
+              width={selectionBox.width + 8}
+              height={selectionBox.height + 8}
+              fill="none"
+              stroke="var(--primary)"
+              strokeWidth={1.5}
+              strokeDasharray="4 3"
+              vectorEffect="non-scaling-stroke"
+            />
+          </svg>
+        )}
+      </div>
+
+      {/* Zoom controls — outside the transformed layer so they stay fixed. */}
+      <div className="absolute bottom-3 right-3 flex flex-col overflow-hidden rounded-lg border border-border bg-card/95 text-foreground shadow-sm backdrop-blur">
+        <button
+          type="button"
+          title="Zoom in"
+          aria-label="Zoom in"
+          onClick={() => zoomByFactor(1.2)}
+          className="flex h-8 w-8 items-center justify-center hover:bg-accent"
         >
-          <rect
-            x={selectionBox.x - 4}
-            y={selectionBox.y - 4}
-            width={selectionBox.width + 8}
-            height={selectionBox.height + 8}
-            fill="none"
-            stroke="var(--primary)"
-            strokeWidth={1.5}
-            strokeDasharray="4 3"
-            vectorEffect="non-scaling-stroke"
-          />
-        </svg>
-      )}
+          <Plus className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          title="Zoom out"
+          aria-label="Zoom out"
+          onClick={() => zoomByFactor(1 / 1.2)}
+          className="flex h-8 w-8 items-center justify-center border-t border-border hover:bg-accent"
+        >
+          <Minus className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          title="Reset zoom to 100%"
+          aria-label="Reset zoom"
+          onClick={resetZoom}
+          className="flex h-8 w-8 items-center justify-center border-t border-border hover:bg-accent"
+        >
+          <Maximize2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <div className="pointer-events-none absolute bottom-3 right-14 rounded bg-card/95 px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground shadow-sm backdrop-blur">
+        {zoomPct}%
+      </div>
     </div>
   );
 }
@@ -223,13 +323,7 @@ function readPositionAttrs(el: Element, tag: string): Origin {
   }
 }
 
-function writePositionAttrs(
-  el: Element,
-  tag: string,
-  origin: Origin,
-  dx: number,
-  dy: number,
-) {
+function writePositionAttrs(el: Element, tag: string, origin: Origin, dx: number, dy: number) {
   const s = (n: number) => (Math.round(n * 100) / 100).toString();
   switch (tag) {
     case "text":
@@ -254,9 +348,7 @@ function writePositionAttrs(
       break;
     default: {
       const existing = origin.__transform || "";
-      const match = existing.match(
-        /translate\(\s*(-?[\d.]+)[ ,]+(-?[\d.]+)\s*\)/,
-      );
+      const match = existing.match(/translate\(\s*(-?[\d.]+)[ ,]+(-?[\d.]+)\s*\)/);
       let tx = 0;
       let ty = 0;
       let rest = existing;
