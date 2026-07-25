@@ -48,7 +48,7 @@ function EditorPage() {
                   </code>
                 </>
               ) : (
-                <>Click any element to select · drag to move</>
+                <>Click to select · drag to move · Ctrl+wheel to zoom · middle-drag to pan</>
               )}
             </div>
           </header>
