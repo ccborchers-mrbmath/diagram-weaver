@@ -1,5 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { Download, Upload } from "lucide-react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import { InputPanel } from "@/components/editor/InputPanel";
 import { SvgCanvas } from "@/components/editor/SvgCanvas";
 import { CodeEditor } from "@/components/editor/CodeEditor";
@@ -30,6 +33,31 @@ export const Route = createFileRoute("/")({
 function EditorPage() {
   const [svg, setSvg] = useState<string>(SAMPLE_SVG);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleDownload = () => {
+    const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "diagram.svg";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-importing the same file
+    if (!file) return;
+    const text = await file.text();
+    if (!/<svg[\s\S]*<\/svg>/i.test(text)) {
+      toast.error("That file doesn't look like an SVG.");
+      return;
+    }
+    setSelectedId(null);
+    setSvg(text.trim());
+    toast.success(`Imported ${file.name}`);
+  };
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
@@ -63,11 +91,38 @@ function EditorPage() {
         </section>
 
         <section className="flex min-h-0 flex-[2] flex-col">
-          <header className="flex items-center justify-between border-b border-border bg-card px-4 py-2">
+          <header className="flex items-center justify-between gap-2 border-b border-border bg-card px-4 py-2">
             <h2 className="text-sm font-medium">SVG Code</h2>
-            <span className="text-xs text-muted-foreground">
-              {svg.length.toLocaleString()} chars
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="hidden text-xs text-muted-foreground sm:inline">
+                {svg.length.toLocaleString()} chars
+              </span>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".svg,image/svg+xml"
+                className="hidden"
+                onChange={handleImportFile}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1.5 px-2 text-xs"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <Upload className="h-3.5 w-3.5" />
+                Import
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1.5 px-2 text-xs"
+                onClick={handleDownload}
+              >
+                <Download className="h-3.5 w-3.5" />
+                Download SVG
+              </Button>
+            </div>
           </header>
           <div className="min-h-0 flex-1">
             <CodeEditor value={svg} onChange={setSvg} highlightId={selectedId} />
