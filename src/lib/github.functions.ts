@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { encodePath } from "./github/paths";
 
 export type RepoSummary = { fullName: string; private: boolean; defaultBranch: string };
 export type SvgFile = { path: string; sha: string };
@@ -184,7 +185,3 @@ export const commitSvgFile = createServerFn({ method: "POST" })
     );
     return { sha: result.content.sha };
   });
-
-function encodePath(path: string): string {
-  return path.split("/").map(encodeURIComponent).join("/");
-}
