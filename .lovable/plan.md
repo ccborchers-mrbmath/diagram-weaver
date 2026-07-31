@@ -1,50 +1,42 @@
-## Goal
+# Connect GitHub and edit SVGs from a repo
 
-Make labels click-and-draggable on the canvas, and make the code editor actually editable. Keep scope tight: labels first (the `<text id="label-*">` nodes), then the same mechanism trivially covers other `[id]` elements.
+Yes, this is possible. Each teacher signs into the app, authorizes their own GitHub account once, browses their repos for `.svg` files, opens one in the editor, and commits changes back with a "Commit" button.
 
-## Root causes
+There is no ready-made per-user GitHub connector in this workspace, so the app needs its own GitHub OAuth app. That means one setup step from you: create a GitHub OAuth app and paste its Client ID and Client Secret when I ask for them (I'll give the exact redirect URL to register).
 
-**Drag dies after one move.** In `SvgCanvas.tsx`, every `pointermove` calls `onChange(next)`, which updates React state in the parent. That re-renders `SvgCanvas`, and the `useLayoutEffect` that does `host.innerHTML = renderSource` throws away the exact DOM node we captured the pointer on. Once detached, `pointermove`/`pointerup` stop firing on it, so the drag freezes and pointer capture leaks.
+## What gets built
 
-**Code editor feels frozen.** Two contributing issues:
-- Every keystroke round-trips through parent state and back into CodeMirror's `value` prop; combined with the drag re-injection path above, focus/selection can be disrupted.
-- The CodeMirror host uses `height="100%"` inside a flex column — if the flex chain collapses, the editor renders 0px tall and looks read-only.
+**1. Accounts (Lovable Cloud)**
+- Email/password + Google sign-in on a public `/auth` page.
+- The editor stays usable without signing in; GitHub features require sign-in.
 
-## Fix
+**2. Connect GitHub**
+- A "GitHub" section in the code panel header: `Connect GitHub` when not linked, otherwise the account handle plus `Disconnect`.
+- Clicking connect opens a popup to GitHub's consent screen (`repo` scope so private repos work), returns to a callback route, and the access token is exchanged and stored server-side, encrypted, keyed to the signed-in user. The token never reaches the browser.
 
-### 1. Decouple live drag from React state (`src/components/editor/SvgCanvas.tsx`)
+**3. Open a file from a repo**
+- "Open file" becomes a menu: `From this computer` (existing behaviour) and `From GitHub`.
+- A dialog lists the user's repos (searchable), then the branch, then a file tree filtered to `.svg` files. Picking one loads its contents into the canvas and code editor.
+- The header shows `owner/repo · branch · path` instead of a local filename.
 
-- During a drag, mutate the live DOM element's attributes directly (`el.setAttribute("x", …)` etc.) for immediate visual feedback. Do NOT call `onChange` on every `pointermove`.
-- On `pointerup`, serialize the current SVG once (`new XMLSerializer().serializeToString(svg)`) and call `onChange(finalString)` exactly once. This is the only time the parent state and the code editor update.
-- Add a `draggingRef` guard so the "source changed → re-inject innerHTML" effect skips re-injection while a drag is in flight (defensive; with the single-shot `onChange` it shouldn't fire mid-drag anyway).
-- Attach `pointermove`/`pointerup` to `window` (not the element) so pointer capture loss on re-render can't kill the drag.
-- Keep the selection outline in sync during drag by re-reading `getBBox()` on each move via a local rAF loop.
+**4. Commit changes**
+- A `Commit` button next to Download, enabled when the editor content differs from what was loaded.
+- Opens a small dialog with an optional message (default: `Update <filename> via Diagram Editor`), commits to the same branch and path, and stores the new file SHA so subsequent commits work.
+- If the file changed on GitHub since it was opened, the commit is rejected and the user is told to reload the file — no silent overwrite.
+- Local files keep their current autosave behaviour; GitHub files are commit-on-demand.
 
-### 2. Make labels obviously interactive
+## Technical notes
 
-- For every `[id]` node, set `cursor: grab` (already done) and also `pointer-events: all` so `<text>` hit-testing is reliable regardless of fill.
-- Slightly enlarge text hit area by adding `paint-order: stroke` isn't needed; instead we just rely on `pointer-events: all`. Labels currently work by tag (`text` → update `x`/`y`) — that path in `parse.ts` is already correct.
+- **Auth/storage**: Lovable Cloud (Supabase). One server-only table `github_connections` (user_id, encrypted access token, github login, timestamps) with RLS and `service_role`-only grants; read/written only by server functions using the admin client.
+- **OAuth**: GitHub OAuth web flow. `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` stored as project secrets; token exchange happens in a server route. Callback route: `/api/public/github/callback` (registered as the OAuth app's authorization callback URL), which hands a one-time code to a server function that stores the token; the popup posts a same-origin completion message and closes.
+- **Token encryption**: AES-256-GCM in a server-only helper using a generated `GITHUB_TOKEN_SECRET`.
+- **GitHub calls**: all via `createServerFn` with `requireSupabaseAuth` — `GET /user`, `GET /user/repos`, `GET /repos/{o}/{r}/branches`, `GET /repos/{o}/{r}/git/trees/{branch}?recursive=1` (filtered to `.svg`), `GET`/`PUT /repos/{o}/{r}/contents/{path}` (base64, with `sha` for updates). Only UI-safe fields returned to the client.
+- **UI**: shadcn `Dialog`, `Command` (repo/file search), `DropdownMenu` for the Open file split, `sonner` toasts for errors surfaced from GitHub's status/body.
+- **Files**: `src/routes/auth.tsx`, `src/routes/api/public/github/callback.ts`, `src/lib/github/*.functions.ts`, `src/server/githubConnections.server.ts`, `src/components/editor/GitHubPicker.tsx`, `src/components/editor/GitHubBar.tsx`; `src/routes/index.tsx` and `src/lib/useFileSync.ts` updated for the two file sources.
+- Also fixing an unrelated hydration warning from locale number formatting in the code-panel header.
 
-### 3. Code editor reliability (`src/components/editor/CodeEditor.tsx` + `src/routes/index.tsx`)
+## Setup you'll need to do
 
-- Ensure the editor container actually has height: give the `<div>` wrapping `CodeMirror` `h-full min-h-0` and set CodeMirror `height="100%"` with a flex parent that has `min-h-0`. Verify the code-panel `<section>` in `index.tsx` has `min-h-0` (it does) and that the inner `<div>` also does.
-- Since drag no longer spams `onChange`, keystrokes in the editor won't be interrupted by canvas re-injections.
-- No debouncing needed for correctness now, but keep `onChange` synchronous; @uiw/react-codemirror preserves cursor when the incoming `value` matches the current doc.
-
-## Files touched
-
-- `src/components/editor/SvgCanvas.tsx` — rewrite pointer handling: window-level listeners, direct DOM mutation during drag, single `onChange` on pointerup, drag guard.
-- `src/components/editor/CodeEditor.tsx` — tighten height/min-h so the editor is always tall enough to focus and type into.
-- (Possibly) `src/routes/index.tsx` — add `min-h-0` on the code-panel inner div if the editor still collapses.
-
-## Out of scope
-
-- Undo/redo, multi-select, keyboard nudging, resize handles, rotation.
-- Snapping / grid.
-- Any change to the sample SVG or its section-heading comments.
-
-## Verification
-
-- Drag `label-A`, `label-B`, `label-C`, `label-D`, `label-beta` around — motion is smooth, code updates once on release, selection outline follows.
-- Click into the code panel, edit an `x=` on a label, tab out — canvas updates.
-- Drag a label, then immediately edit its `y=` in code — no cursor jump, no lost focus.
+1. GitHub → Settings → Developer settings → OAuth Apps → New OAuth App.
+2. Homepage URL: your published app URL. Authorization callback URL: the callback URL above (I'll give the exact string).
+3. Paste the Client ID and Client Secret into the secure form I open.
