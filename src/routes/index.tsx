@@ -9,6 +9,7 @@ import { CodeEditor } from "@/components/editor/CodeEditor";
 import { SAMPLE_SVG } from "@/lib/svg/sample";
 import { assignMissingIds } from "@/lib/svg/parse";
 import { useFileSync, type SaveStatus } from "@/lib/useFileSync";
+import { GitHubControls, type GithubFile } from "@/components/editor/GitHubControls";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -36,6 +37,7 @@ function EditorPage() {
   const [svg, setSvg] = useState<string>(SAMPLE_SVG);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [githubFile, setGithubFile] = useState<GithubFile | null>(null);
 
   // Inject ids for id-less shapes as soon as an SVG is loaded, so pasted /
   // imported / opened files are immediately tool-editable and the ids show in
@@ -106,6 +108,23 @@ function EditorPage() {
           <header className="flex items-center justify-between gap-2 border-b border-border bg-card px-4 py-2">
             <div className="flex min-w-0 items-center gap-2">
               <h2 className="shrink-0 text-sm font-medium">SVG Code</h2>
+              {githubFile && (
+                <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                  <span className="truncate font-mono text-foreground">{githubFile.path}</span>
+                  <span className="shrink-0">
+                    {githubFile.repo} · {githubFile.branch}
+                  </span>
+                  <span
+                    className={
+                      svg === githubFile.baseline
+                        ? "shrink-0 text-green-600 dark:text-green-500"
+                        : "shrink-0 text-amber-600 dark:text-amber-500"
+                    }
+                  >
+                    {svg === githubFile.baseline ? "Committed" : "Uncommitted"}
+                  </span>
+                </span>
+              )}
               {fileSync.fileName && (
                 <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
                   <span className="truncate font-mono text-foreground">{fileSync.fileName}</span>
@@ -126,8 +145,14 @@ function EditorPage() {
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <span className="hidden text-xs text-muted-foreground lg:inline">
-                {svg.length.toLocaleString()} chars
+                {svg.length} chars
               </span>
+              <GitHubControls
+                svg={svg}
+                file={githubFile}
+                onFileChange={setGithubFile}
+                onLoadSvg={loadSvg}
+              />
               <input
                 ref={fileInputRef}
                 type="file"
