@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useRef, useState } from "react";
-import { Download, FolderOpen, Upload, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Download, FolderOpen, Redo2, Undo2, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { InputPanel } from "@/components/editor/InputPanel";
@@ -9,6 +9,7 @@ import { CodeEditor } from "@/components/editor/CodeEditor";
 import { SAMPLE_SVG } from "@/lib/svg/sample";
 import { assignMissingIds } from "@/lib/svg/parse";
 import { useFileSync, type SaveStatus } from "@/lib/useFileSync";
+import { useHistory } from "@/lib/useHistory";
 import { GitHubControls, type GithubFile } from "@/components/editor/GitHubControls";
 
 export const Route = createFileRoute("/")({
@@ -34,20 +35,57 @@ export const Route = createFileRoute("/")({
 });
 
 function EditorPage() {
-  const [svg, setSvg] = useState<string>(SAMPLE_SVG);
+  const history = useHistory(SAMPLE_SVG);
+  const svg = history.value;
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [githubFile, setGithubFile] = useState<GithubFile | null>(null);
 
-  // Inject ids for id-less shapes as soon as an SVG is loaded, so pasted /
-  // imported / opened files are immediately tool-editable and the ids show in
-  // the code — not only after the first drag.
-  const loadSvg = useCallback((text: string) => {
-    setSelectedId(null);
-    setSvg(assignMissingIds(text));
-  }, []);
+  // Discrete document edit from the canvas (drag / resize / endpoint / tools).
+  const commitSvg = useCallback((next: string) => history.set(next), [history]);
+  // Typing in the code editor coalesces into one undo step per burst.
+  const editCode = useCallback((next: string) => history.set(next, "code"), [history]);
+
+  // A fresh document (generate / template / import / open / GitHub load): inject
+  // ids for id-less shapes so it's immediately tool-editable, reset selection,
+  // and record it as one undo step.
+  const loadSvg = useCallback(
+    (text: string) => {
+      setSelectedId(null);
+      history.set(assignMissingIds(text));
+    },
+    [history],
+  );
   const notifyError = useCallback((msg: string) => toast.error(msg), []);
   const fileSync = useFileSync(svg, loadSvg, notifyError);
+
+  const undo = useCallback(() => {
+    setSelectedId(null);
+    history.undo();
+  }, [history]);
+  const redo = useCallback(() => {
+    setSelectedId(null);
+    history.redo();
+  }, [history]);
+
+  // Ctrl/Cmd+Z undoes, Ctrl+Shift+Z / Ctrl+Y redoes — except inside plain text
+  // fields (prompt, params) and the code editor, which keep their own undo.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const key = e.key.toLowerCase();
+      if (key !== "z" && key !== "y") return;
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      // Plain text fields and the code editor keep their own undo history.
+      if (tag === "INPUT" || tag === "TEXTAREA" || t?.closest(".cm-editor")) return;
+      e.preventDefault();
+      if (key === "z" && !e.shiftKey) undo();
+      else redo(); // Shift+Z or Y
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo]);
 
   const handleDownload = () => {
     const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
@@ -68,19 +106,44 @@ function EditorPage() {
       toast.error("That file doesn't look like an SVG.");
       return;
     }
-    setSelectedId(null);
-    setSvg(assignMissingIds(text.trim()));
+    loadSvg(text.trim());
     toast.success(`Imported ${file.name}`);
   };
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
-      <InputPanel onGenerate={setSvg} />
+      <InputPanel onGenerate={loadSvg} />
 
       <main className="flex min-w-0 flex-1 flex-col">
         <section className="flex min-h-0 flex-[3] flex-col border-b border-border">
-          <header className="flex items-center justify-between border-b border-border bg-card px-4 py-2">
-            <h2 className="text-sm font-medium">Visual Canvas</h2>
+          <header className="flex items-center justify-between gap-2 border-b border-border bg-card px-4 py-2">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-medium">Visual Canvas</h2>
+              <div className="flex items-center gap-0.5">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={undo}
+                  disabled={!history.canUndo}
+                  title="Undo (Ctrl+Z)"
+                  aria-label="Undo"
+                >
+                  <Undo2 className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={redo}
+                  disabled={!history.canRedo}
+                  title="Redo (Ctrl+Shift+Z)"
+                  aria-label="Redo"
+                >
+                  <Redo2 className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
             <div className="text-xs text-muted-foreground">
               {selectedId ? (
                 <>
@@ -99,7 +162,7 @@ function EditorPage() {
               svgSource={svg}
               selectedId={selectedId}
               onSelect={setSelectedId}
-              onChange={setSvg}
+              onChange={commitSvg}
             />
           </div>
         </section>
@@ -195,7 +258,7 @@ function EditorPage() {
             </div>
           </header>
           <div className="min-h-0 flex-1">
-            <CodeEditor value={svg} onChange={setSvg} highlightId={selectedId} />
+            <CodeEditor value={svg} onChange={editCode} highlightId={selectedId} />
           </div>
         </section>
       </main>
