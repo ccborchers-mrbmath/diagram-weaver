@@ -10,6 +10,7 @@ import {
   MousePointer2,
   Plus,
   Slash,
+  Spline,
   Square,
   type LucideIcon,
 } from "lucide-react";
@@ -41,8 +42,14 @@ type HandleRole =
   | { kind: "ellipse-rx" }
   | { kind: "ellipse-ry" };
 type Handle = { id: string; x: number; y: number; role: HandleRole };
-type Tool = "select" | "line" | "rect" | "ellipse";
+type Tool = "select" | "line" | "rect" | "ellipse" | "arc";
 type Draft = { x1: number; y1: number; x2: number; y2: number };
+type XY = { x: number; y: number };
+// Arc tool flow: click centre → click to set radius/start → click to set end.
+type ArcState =
+  | { stage: "center" }
+  | { stage: "radius"; o: XY }
+  | { stage: "end"; o: XY; r: number; a1: number };
 const RESIZE_STEP = 1.12; // per-click enlarge/shrink factor for the mini-toolbar
 const round2 = (n: number): string => (Math.round(n * 100) / 100).toString();
 
@@ -53,7 +60,21 @@ const TOOLS: { tool: Tool; icon: LucideIcon; label: string }[] = [
   { tool: "line", icon: Slash, label: "Line" },
   { tool: "rect", icon: Square, label: "Rectangle" },
   { tool: "ellipse", icon: Circle, label: "Ellipse" },
+  { tool: "arc", icon: Spline, label: "Arc (centre → start → end)" },
 ];
+
+/** Point on a circle at (o, r) for a screen-space angle (y-down). */
+function onCircle(o: XY, r: number, angle: number): XY {
+  return { x: o.x + r * Math.cos(angle), y: o.y + r * Math.sin(angle) };
+}
+/** SVG path `d` for a circular arc swept `swept` radians from angle `a1`. */
+function arcPathD(o: XY, r: number, a1: number, swept: number): string {
+  const a = onCircle(o, r, a1);
+  const b = onCircle(o, r, a1 + swept);
+  const largeArc = Math.abs(swept) > Math.PI ? 1 : 0;
+  const sweepFlag = swept >= 0 ? 1 : 0;
+  return `M ${round2(a.x)} ${round2(a.y)} A ${round2(r)} ${round2(r)} 0 ${largeArc} ${sweepFlag} ${round2(b.x)} ${round2(b.y)}`;
+}
 
 /** Map a client (screen) point into the SVG's user coordinates (viewBox space),
  *  accounting for the viewBox mapping and the CSS zoom/pan transform. */
@@ -168,6 +189,11 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
   const [transform, setTransform] = useState<Transform>(IDENTITY);
   const [tool, setTool] = useState<Tool>("select");
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [arcState, setArcState] = useState<ArcState | null>(null);
+  const [arcCursor, setArcCursor] = useState<XY | null>(null);
+  const [arcSwept, setArcSwept] = useState(0);
+  const arcLastAngle = useRef(0);
+  const arcSweptRef = useRef(0);
   const draggingRef = useRef(false);
 
   // Fine nudge step in user units (~0.4% of the smaller viewBox dimension) for
@@ -354,9 +380,16 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
   };
 
   // ----- shape drawing tools -----
+  const resetArc = () => {
+    setArcCursor(null);
+    setArcSwept(0);
+    arcSweptRef.current = 0;
+  };
   const selectTool = (t: Tool) => {
     onSelect(null);
     setDraft(null);
+    resetArc();
+    setArcState(t === "arc" ? { stage: "center" } : null);
     setTool(t);
   };
 
@@ -366,11 +399,66 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
       if (e.key === "Escape") {
         setTool("select");
         setDraft(null);
+        setArcState(null);
+        setArcCursor(null);
+        setArcSwept(0);
+        arcSweptRef.current = 0;
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  // Arc: each click advances centre → radius/start → end; the third finalises.
+  const insertArc = (svg: SVGSVGElement, o: XY, r: number, a1: number, swept: number) => {
+    if (Math.abs(swept) < 0.01) return;
+    const ns = "http://www.w3.org/2000/svg";
+    const el = document.createElementNS(ns, "path");
+    el.setAttribute("d", arcPathD(o, r, a1, swept));
+    el.setAttribute("id", `draw-${Math.random().toString(36).slice(2, 8)}`);
+    el.setAttribute("fill", "none");
+    el.setAttribute("stroke", DRAW_STROKE);
+    el.setAttribute("stroke-width", DRAW_WIDTH);
+    svg.appendChild(el);
+    onChange(new XMLSerializer().serializeToString(svg));
+  };
+
+  const onArcClick = (svg: SVGSVGElement, p: XY) => {
+    const st = arcState;
+    if (!st) return;
+    if (st.stage === "center") {
+      setArcState({ stage: "radius", o: p });
+      setArcCursor(p);
+      return;
+    }
+    if (st.stage === "radius") {
+      const r = Math.hypot(p.x - st.o.x, p.y - st.o.y);
+      if (r < 2) return; // ignore a click on the centre
+      const a1 = Math.atan2(p.y - st.o.y, p.x - st.o.x);
+      arcLastAngle.current = a1;
+      arcSweptRef.current = 0;
+      setArcSwept(0);
+      setArcState({ stage: "end", o: st.o, r, a1 });
+      return;
+    }
+    // stage === "end" → finalise and start a fresh arc
+    insertArc(svg, st.o, st.r, st.a1, arcSweptRef.current);
+    resetArc();
+    setArcState({ stage: "center" });
+  };
+
+  const onArcMove = (p: XY) => {
+    setArcCursor(p);
+    if (arcState?.stage === "end") {
+      const ang = Math.atan2(p.y - arcState.o.y, p.x - arcState.o.x);
+      let d = ang - arcLastAngle.current;
+      if (d > Math.PI) d -= 2 * Math.PI;
+      else if (d < -Math.PI) d += 2 * Math.PI;
+      arcSweptRef.current += d; // accumulate so sweeps past 180° track the mouse
+      arcLastAngle.current = ang;
+      setArcSwept(arcSweptRef.current);
+    }
+  };
 
   const insertShape = (svg: SVGSVGElement, d: Draft) => {
     const ns = "http://www.w3.org/2000/svg";
@@ -413,6 +501,10 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
     if (!svg) return;
     const start = clientToUser(svg, e.clientX, e.clientY);
     if (!start) return;
+    if (tool === "arc") {
+      onArcClick(svg, { x: start.x, y: start.y });
+      return;
+    }
     onSelect(null);
     setDraft({ x1: start.x, y1: start.y, x2: start.x, y2: start.y });
 
@@ -654,6 +746,61 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
 
   const zoomPct = Math.round(transform.scale * 100);
 
+  // Live arc preview (user coords): a guide circle, radius lines, and the arc.
+  const guide = {
+    fill: "none",
+    stroke: "var(--primary)",
+    strokeWidth: 1,
+    strokeDasharray: "4 4",
+    vectorEffect: "non-scaling-stroke" as const,
+    opacity: 0.5,
+  };
+  const arcOverlay =
+    tool === "arc" && arcState && arcState.stage !== "center" ? (
+      <svg
+        className="pointer-events-none absolute inset-0 h-full w-full"
+        viewBox={viewBox}
+        preserveAspectRatio="xMidYMid meet"
+      >
+        {arcState.stage === "radius" && arcCursor && (
+          <>
+            <circle
+              cx={arcState.o.x}
+              cy={arcState.o.y}
+              r={Math.hypot(arcCursor.x - arcState.o.x, arcCursor.y - arcState.o.y)}
+              {...guide}
+            />
+            <line
+              x1={arcState.o.x}
+              y1={arcState.o.y}
+              x2={arcCursor.x}
+              y2={arcCursor.y}
+              {...guide}
+            />
+            <circle cx={arcState.o.x} cy={arcState.o.y} r={3} fill="var(--primary)" />
+          </>
+        )}
+        {arcState.stage === "end" && (
+          <>
+            <circle cx={arcState.o.x} cy={arcState.o.y} r={arcState.r} {...guide} opacity={0.35} />
+            {[arcState.a1, arcState.a1 + arcSwept].map((a, i) => {
+              const e = onCircle(arcState.o, arcState.r, a);
+              return (
+                <line key={i} x1={arcState.o.x} y1={arcState.o.y} x2={e.x} y2={e.y} {...guide} />
+              );
+            })}
+            <path
+              d={arcPathD(arcState.o, arcState.r, arcState.a1, arcSwept)}
+              fill="none"
+              stroke="var(--primary)"
+              strokeWidth={1.5}
+              vectorEffect="non-scaling-stroke"
+            />
+          </>
+        )}
+      </svg>
+    ) : null;
+
   return (
     <div
       ref={containerRef}
@@ -733,11 +880,23 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
             )}
           </svg>
         )}
+        {arcOverlay}
       </div>
 
       {/* Drawing surface — captures pointer only while a shape tool is active. */}
       {tool !== "select" && (
-        <div className="absolute inset-0 z-10 cursor-crosshair" onPointerDown={onDrawPointerDown} />
+        <div
+          className="absolute inset-0 z-10 cursor-crosshair"
+          onPointerDown={onDrawPointerDown}
+          onPointerMove={(e) => {
+            if (tool !== "arc") return;
+            const host = hostRef.current;
+            const svg = host?.querySelector("svg") as SVGSVGElement | null;
+            if (!svg) return;
+            const p = clientToUser(svg, e.clientX, e.clientY);
+            if (p) onArcMove({ x: p.x, y: p.y });
+          }}
+        />
       )}
 
       {/* Tool palette. */}
