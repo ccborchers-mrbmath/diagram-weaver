@@ -4,9 +4,13 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  Circle,
   Maximize2,
   Minus,
+  MousePointer2,
   Plus,
+  Slash,
+  Square,
   type LucideIcon,
 } from "lucide-react";
 import { ensureIdsOnSvg, parseSvg } from "@/lib/svg/parse";
@@ -29,8 +33,27 @@ const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
 type Popup = { x: number; y: number; below: boolean };
 // A draggable endpoint handle, positioned in container pixels.
 type Handle = { key: "p1" | "p2"; x: number; y: number };
+type Tool = "select" | "line" | "rect" | "ellipse";
+type Draft = { x1: number; y1: number; x2: number; y2: number };
 const RESIZE_STEP = 1.12; // per-click enlarge/shrink factor for the mini-toolbar
 const round2 = (n: number): string => (Math.round(n * 100) / 100).toString();
+
+const DRAW_STROKE = "#0f172a";
+const DRAW_WIDTH = "2";
+const TOOLS: { tool: Tool; icon: LucideIcon; label: string }[] = [
+  { tool: "select", icon: MousePointer2, label: "Select" },
+  { tool: "line", icon: Slash, label: "Line" },
+  { tool: "rect", icon: Square, label: "Rectangle" },
+  { tool: "ellipse", icon: Circle, label: "Ellipse" },
+];
+
+/** Map a client (screen) point into the SVG's user coordinates (viewBox space),
+ *  accounting for the viewBox mapping and the CSS zoom/pan transform. */
+function clientToUser(svg: SVGSVGElement, clientX: number, clientY: number): DOMPoint | null {
+  const m = svg.getScreenCTM();
+  if (!m) return null;
+  return new DOMPoint(clientX, clientY).matrixTransform(m.inverse());
+}
 
 // Screen-pixel positions (relative to `cr`) of a line's two endpoints, honouring
 // the element's own transform via getScreenCTM.
@@ -89,6 +112,8 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
   const [popup, setPopup] = useState<Popup | null>(null);
   const [handles, setHandles] = useState<Handle[]>([]);
   const [transform, setTransform] = useState<Transform>(IDENTITY);
+  const [tool, setTool] = useState<Tool>("select");
+  const [draft, setDraft] = useState<Draft | null>(null);
   const draggingRef = useRef(false);
 
   // Fine nudge step in user units (~0.4% of the smaller viewBox dimension) for
@@ -218,6 +243,89 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
       window.removeEventListener("pointercancel", onUp);
       draggingRef.current = false;
       onChange(new XMLSerializer().serializeToString(svg));
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  };
+
+  // ----- shape drawing tools -----
+  const selectTool = (t: Tool) => {
+    onSelect(null);
+    setDraft(null);
+    setTool(t);
+  };
+
+  // Escape leaves any draw tool and returns to Select.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setTool("select");
+        setDraft(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const insertShape = (svg: SVGSVGElement, d: Draft) => {
+    const ns = "http://www.w3.org/2000/svg";
+    const id = `draw-${Math.random().toString(36).slice(2, 8)}`;
+    let el: SVGElement;
+    if (tool === "line") {
+      el = document.createElementNS(ns, "line");
+      el.setAttribute("x1", round2(d.x1));
+      el.setAttribute("y1", round2(d.y1));
+      el.setAttribute("x2", round2(d.x2));
+      el.setAttribute("y2", round2(d.y2));
+    } else if (tool === "rect") {
+      el = document.createElementNS(ns, "rect");
+      el.setAttribute("x", round2(Math.min(d.x1, d.x2)));
+      el.setAttribute("y", round2(Math.min(d.y1, d.y2)));
+      el.setAttribute("width", round2(Math.abs(d.x2 - d.x1)));
+      el.setAttribute("height", round2(Math.abs(d.y2 - d.y1)));
+      el.setAttribute("fill", "none");
+    } else {
+      el = document.createElementNS(ns, "ellipse");
+      el.setAttribute("cx", round2((d.x1 + d.x2) / 2));
+      el.setAttribute("cy", round2((d.y1 + d.y2) / 2));
+      el.setAttribute("rx", round2(Math.abs(d.x2 - d.x1) / 2));
+      el.setAttribute("ry", round2(Math.abs(d.y2 - d.y1) / 2));
+      el.setAttribute("fill", "none");
+    }
+    el.setAttribute("id", id);
+    el.setAttribute("stroke", DRAW_STROKE);
+    el.setAttribute("stroke-width", DRAW_WIDTH);
+    svg.appendChild(el);
+    onChange(new XMLSerializer().serializeToString(svg));
+  };
+
+  const onDrawPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0 || tool === "select") return; // let pan / select through
+    e.preventDefault();
+    const host = hostRef.current;
+    if (!host) return;
+    const svg = host.querySelector("svg") as SVGSVGElement | null;
+    if (!svg) return;
+    const start = clientToUser(svg, e.clientX, e.clientY);
+    if (!start) return;
+    onSelect(null);
+    setDraft({ x1: start.x, y1: start.y, x2: start.x, y2: start.y });
+
+    const onMove = (ev: PointerEvent) => {
+      const p = clientToUser(svg, ev.clientX, ev.clientY);
+      if (p) setDraft((d) => (d ? { ...d, x2: p.x, y2: p.y } : d));
+    };
+    const onUp = (ev: PointerEvent) => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      const p = clientToUser(svg, ev.clientX, ev.clientY);
+      setDraft(null);
+      if (!p) return;
+      // Ignore an accidental click (no drag).
+      if (Math.abs(p.x - start.x) < 2 && Math.abs(p.y - start.y) < 2) return;
+      insertShape(svg, { x1: start.x, y1: start.y, x2: p.x, y2: p.y });
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -478,10 +586,77 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
             />
           </svg>
         )}
+        {draft && (
+          <svg
+            className="pointer-events-none absolute inset-0 h-full w-full"
+            viewBox={viewBox}
+            preserveAspectRatio="xMidYMid meet"
+          >
+            {tool === "line" && (
+              <line
+                x1={draft.x1}
+                y1={draft.y1}
+                x2={draft.x2}
+                y2={draft.y2}
+                stroke="var(--primary)"
+                strokeWidth={1.5}
+                vectorEffect="non-scaling-stroke"
+              />
+            )}
+            {tool === "rect" && (
+              <rect
+                x={Math.min(draft.x1, draft.x2)}
+                y={Math.min(draft.y1, draft.y2)}
+                width={Math.abs(draft.x2 - draft.x1)}
+                height={Math.abs(draft.y2 - draft.y1)}
+                fill="none"
+                stroke="var(--primary)"
+                strokeWidth={1.5}
+                vectorEffect="non-scaling-stroke"
+              />
+            )}
+            {tool === "ellipse" && (
+              <ellipse
+                cx={(draft.x1 + draft.x2) / 2}
+                cy={(draft.y1 + draft.y2) / 2}
+                rx={Math.abs(draft.x2 - draft.x1) / 2}
+                ry={Math.abs(draft.y2 - draft.y1) / 2}
+                fill="none"
+                stroke="var(--primary)"
+                strokeWidth={1.5}
+                vectorEffect="non-scaling-stroke"
+              />
+            )}
+          </svg>
+        )}
+      </div>
+
+      {/* Drawing surface — captures pointer only while a shape tool is active. */}
+      {tool !== "select" && (
+        <div className="absolute inset-0 z-10 cursor-crosshair" onPointerDown={onDrawPointerDown} />
+      )}
+
+      {/* Tool palette. */}
+      <div className="absolute left-3 top-3 z-30 flex overflow-hidden rounded-lg border border-border bg-card/95 text-foreground shadow-sm backdrop-blur">
+        {TOOLS.map(({ tool: tItem, icon: Icon, label }) => (
+          <button
+            key={tItem}
+            type="button"
+            title={label}
+            aria-label={label}
+            aria-pressed={tool === tItem}
+            onClick={() => selectTool(tItem)}
+            className={`flex h-8 w-8 items-center justify-center border-r border-border last:border-r-0 hover:bg-accent ${
+              tool === tItem ? "bg-primary text-primary-foreground hover:bg-primary" : ""
+            }`}
+          >
+            <Icon className="h-4 w-4" />
+          </button>
+        ))}
       </div>
 
       {/* Zoom controls — outside the transformed layer so they stay fixed. */}
-      <div className="absolute bottom-3 right-3 flex flex-col overflow-hidden rounded-lg border border-border bg-card/95 text-foreground shadow-sm backdrop-blur">
+      <div className="absolute bottom-3 right-3 z-20 flex flex-col overflow-hidden rounded-lg border border-border bg-card/95 text-foreground shadow-sm backdrop-blur">
         <button
           type="button"
           title="Zoom in"
