@@ -27,7 +27,26 @@ const IDENTITY: Transform = { scale: 1, tx: 0, ty: 0 };
 const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
 
 type Popup = { x: number; y: number; below: boolean };
+// A draggable endpoint handle, positioned in container pixels.
+type Handle = { key: "p1" | "p2"; x: number; y: number };
 const RESIZE_STEP = 1.12; // per-click enlarge/shrink factor for the mini-toolbar
+const round2 = (n: number): string => (Math.round(n * 100) / 100).toString();
+
+// Screen-pixel positions (relative to `cr`) of a line's two endpoints, honouring
+// the element's own transform via getScreenCTM.
+function lineHandles(el: SVGGraphicsElement, cr: DOMRect): Handle[] {
+  const scm = el.getScreenCTM();
+  if (!scm) return [];
+  const at = (a: string) => parseFloat(el.getAttribute(a) || "0");
+  const ends: [Handle["key"], string, string][] = [
+    ["p1", "x1", "y1"],
+    ["p2", "x2", "y2"],
+  ];
+  return ends.map(([key, ax, ay]) => {
+    const p = new DOMPoint(at(ax), at(ay)).matrixTransform(scm);
+    return { key, x: p.x - cr.left, y: p.y - cr.top };
+  });
+}
 // Shapes whose stroke should stay a fixed weight when the element is scaled.
 const STROKED_TAGS = new Set(["path", "line", "polyline", "polygon", "circle", "ellipse", "rect"]);
 
@@ -68,6 +87,7 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
   const [viewBox, setViewBox] = useState<string>("0 0 400 300");
   const [selectionBox, setSelectionBox] = useState<BBox | null>(null);
   const [popup, setPopup] = useState<Popup | null>(null);
+  const [handles, setHandles] = useState<Handle[]>([]);
   const [transform, setTransform] = useState<Transform>(IDENTITY);
   const draggingRef = useRef(false);
 
@@ -166,6 +186,44 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
     [applyToSelected],
   );
 
+  // Drag a line endpoint. The new position is mapped from screen space into the
+  // element's local coordinates via getScreenCTM (which includes any transform
+  // on the line), so it works at any zoom/pan and after a resize.
+  const startHandleDrag = (e: React.PointerEvent, key: Handle["key"]) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const host = hostRef.current;
+    const container = containerRef.current;
+    if (!host || !container || !selectedId) return;
+    const svg = host.querySelector("svg") as SVGSVGElement | null;
+    const el = host.querySelector(`#${cssEscape(selectedId)}`) as SVGGraphicsElement | null;
+    if (!svg || !el) return;
+    const ax = key === "p1" ? "x1" : "x2";
+    const ay = key === "p1" ? "y1" : "y2";
+    draggingRef.current = true;
+    setPopup(null);
+
+    const onMove = (ev: PointerEvent) => {
+      const scm = el.getScreenCTM();
+      if (!scm) return;
+      const local = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(scm.inverse());
+      el.setAttribute(ax, round2(local.x));
+      el.setAttribute(ay, round2(local.y));
+      setHandles(lineHandles(el, container.getBoundingClientRect()));
+      setSelectionBox(userSpaceBBox(svg, el));
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      draggingRef.current = false;
+      onChange(new XMLSerializer().serializeToString(svg));
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  };
+
   // Keep the latest transform in a ref so the pan gesture can snapshot it at
   // pointer-down without re-subscribing.
   const transformRef = useRef(transform);
@@ -258,6 +316,7 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
     if (!selectedId || !host || !container) {
       setSelectionBox(null);
       setPopup(null);
+      setHandles([]);
       return;
     }
     const svg = host.querySelector("svg") as SVGSVGElement | null;
@@ -265,12 +324,14 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
     if (!svg || !el || typeof el.getBBox !== "function") {
       setSelectionBox(null);
       setPopup(null);
+      setHandles([]);
       return;
     }
+    const cr = container.getBoundingClientRect();
     setSelectionBox(userSpaceBBox(svg, el));
+    setHandles(el.tagName.toLowerCase() === "line" ? lineHandles(el, cr) : []);
     try {
       const r = el.getBoundingClientRect();
-      const cr = container.getBoundingClientRect();
       const topY = r.top - cr.top;
       const bottomY = r.bottom - cr.top;
       const below = topY < 116; // not enough room above → drop the toolbar below
@@ -327,6 +388,7 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
         draggingRef.current = true;
         el.style.cursor = "grabbing";
         setPopup(null); // hide the mini-toolbar during a drag; it resyncs on drop
+        setHandles([]); // endpoint handles resync on drop
 
         let rafId = 0;
         let pending: { dx: number; dy: number } | null = null;
@@ -499,6 +561,17 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
           </div>
         </div>
       )}
+
+      {/* Endpoint handles for a selected line — drag to move each end. */}
+      {handles.map((h) => (
+        <div
+          key={h.key}
+          onPointerDown={(e) => startHandleDrag(e, h.key)}
+          title="Drag endpoint"
+          className="absolute z-20 h-3 w-3 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border-2 border-primary bg-background shadow-sm"
+          style={{ left: h.x, top: h.y }}
+        />
+      ))}
     </div>
   );
 }
