@@ -31,8 +31,16 @@ const IDENTITY: Transform = { scale: 1, tx: 0, ty: 0 };
 const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
 
 type Popup = { x: number; y: number; below: boolean };
-// A draggable endpoint handle, positioned in container pixels.
-type Handle = { key: "p1" | "p2"; x: number; y: number };
+// A draggable geometry handle, positioned in container pixels. `role` tells the
+// drag handler which attribute(s) of the element to rewrite.
+type HandleRole =
+  | { kind: "line"; point: "x1y1" | "x2y2" }
+  | { kind: "vertex"; index: number }
+  | { kind: "rect"; corner: "nw" | "ne" | "sw" | "se" }
+  | { kind: "circle-r" }
+  | { kind: "ellipse-rx" }
+  | { kind: "ellipse-ry" };
+type Handle = { id: string; x: number; y: number; role: HandleRole };
 type Tool = "select" | "line" | "rect" | "ellipse";
 type Draft = { x1: number; y1: number; x2: number; y2: number };
 const RESIZE_STEP = 1.12; // per-click enlarge/shrink factor for the mini-toolbar
@@ -55,20 +63,66 @@ function clientToUser(svg: SVGSVGElement, clientX: number, clientY: number): DOM
   return new DOMPoint(clientX, clientY).matrixTransform(m.inverse());
 }
 
-// Screen-pixel positions (relative to `cr`) of a line's two endpoints, honouring
-// the element's own transform via getScreenCTM.
-function lineHandles(el: SVGGraphicsElement, cr: DOMRect): Handle[] {
+function parsePoints(s: string): [number, number][] {
+  const nums = (s.trim().match(/-?[\d.]+/g) || []).map(Number);
+  const out: [number, number][] = [];
+  for (let i = 0; i + 1 < nums.length; i += 2) out.push([nums[i], nums[i + 1]]);
+  return out;
+}
+function serializePoints(pts: [number, number][]): string {
+  return pts.map(([x, y]) => `${round2(x)},${round2(y)}`).join(" ");
+}
+
+// Geometry handles for the selected element, positioned in container pixels and
+// honouring the element's own transform via getScreenCTM. Lines get endpoint
+// handles; polylines/polygons a handle per vertex; rects four corners; circles
+// a radius handle; ellipses one per axis.
+function computeHandles(el: SVGGraphicsElement, cr: DOMRect): Handle[] {
   const scm = el.getScreenCTM();
   if (!scm) return [];
   const at = (a: string) => parseFloat(el.getAttribute(a) || "0");
-  const ends: [Handle["key"], string, string][] = [
-    ["p1", "x1", "y1"],
-    ["p2", "x2", "y2"],
-  ];
-  return ends.map(([key, ax, ay]) => {
-    const p = new DOMPoint(at(ax), at(ay)).matrixTransform(scm);
-    return { key, x: p.x - cr.left, y: p.y - cr.top };
+  const toPx = (lx: number, ly: number) => {
+    const p = new DOMPoint(lx, ly).matrixTransform(scm);
+    return { x: p.x - cr.left, y: p.y - cr.top };
+  };
+  const h = (id: string, lx: number, ly: number, role: HandleRole): Handle => ({
+    id,
+    ...toPx(lx, ly),
+    role,
   });
+  switch (el.tagName.toLowerCase()) {
+    case "line":
+      return [
+        h("p1", at("x1"), at("y1"), { kind: "line", point: "x1y1" }),
+        h("p2", at("x2"), at("y2"), { kind: "line", point: "x2y2" }),
+      ];
+    case "polyline":
+    case "polygon":
+      return parsePoints(el.getAttribute("points") || "").map(([x, y], i) =>
+        h(`v${i}`, x, y, { kind: "vertex", index: i }),
+      );
+    case "rect": {
+      const x = at("x");
+      const y = at("y");
+      const w = at("width");
+      const hgt = at("height");
+      return [
+        h("nw", x, y, { kind: "rect", corner: "nw" }),
+        h("ne", x + w, y, { kind: "rect", corner: "ne" }),
+        h("sw", x, y + hgt, { kind: "rect", corner: "sw" }),
+        h("se", x + w, y + hgt, { kind: "rect", corner: "se" }),
+      ];
+    }
+    case "circle":
+      return [h("r", at("cx") + at("r"), at("cy"), { kind: "circle-r" })];
+    case "ellipse":
+      return [
+        h("rx", at("cx") + at("rx"), at("cy"), { kind: "ellipse-rx" }),
+        h("ry", at("cx"), at("cy") + at("ry"), { kind: "ellipse-ry" }),
+      ];
+    default:
+      return [];
+  }
 }
 // Shapes whose stroke should stay a fixed weight when the element is scaled.
 const STROKED_TAGS = new Set(["path", "line", "polyline", "polygon", "circle", "ellipse", "rect"]);
@@ -211,10 +265,11 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
     [applyToSelected],
   );
 
-  // Drag a line endpoint. The new position is mapped from screen space into the
-  // element's local coordinates via getScreenCTM (which includes any transform
-  // on the line), so it works at any zoom/pan and after a resize.
-  const startHandleDrag = (e: React.PointerEvent, key: Handle["key"]) => {
+  // Drag a geometry handle. The pointer is mapped from screen space into the
+  // element's local coordinates via getScreenCTM (which includes any transform),
+  // so it works at any zoom/pan and after a resize. `role` decides which
+  // attribute(s) to rewrite.
+  const startHandleDrag = (e: React.PointerEvent, handle: Handle) => {
     e.stopPropagation();
     e.preventDefault();
     const host = hostRef.current;
@@ -223,18 +278,67 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
     const svg = host.querySelector("svg") as SVGSVGElement | null;
     const el = host.querySelector(`#${cssEscape(selectedId)}`) as SVGGraphicsElement | null;
     if (!svg || !el) return;
-    const ax = key === "p1" ? "x1" : "x2";
-    const ay = key === "p1" ? "y1" : "y2";
+    const role = handle.role;
+    const at = (a: string) => parseFloat(el.getAttribute(a) || "0");
+
+    // A rect corner resizes about the fixed opposite corner, snapshotted here.
+    let rectAnchor: { x: number; y: number } | null = null;
+    if (role.kind === "rect") {
+      const x = at("x");
+      const y = at("y");
+      const w = at("width");
+      const hgt = at("height");
+      rectAnchor = {
+        x: role.corner === "nw" || role.corner === "sw" ? x + w : x,
+        y: role.corner === "nw" || role.corner === "ne" ? y + hgt : y,
+      };
+    }
+
     draggingRef.current = true;
     setPopup(null);
 
     const onMove = (ev: PointerEvent) => {
       const scm = el.getScreenCTM();
       if (!scm) return;
-      const local = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(scm.inverse());
-      el.setAttribute(ax, round2(local.x));
-      el.setAttribute(ay, round2(local.y));
-      setHandles(lineHandles(el, container.getBoundingClientRect()));
+      const p = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(scm.inverse());
+      const set = (a: string, v: number) => el.setAttribute(a, round2(v));
+      switch (role.kind) {
+        case "line":
+          if (role.point === "x1y1") {
+            set("x1", p.x);
+            set("y1", p.y);
+          } else {
+            set("x2", p.x);
+            set("y2", p.y);
+          }
+          break;
+        case "vertex": {
+          const pts = parsePoints(el.getAttribute("points") || "");
+          if (role.index < pts.length) {
+            pts[role.index] = [p.x, p.y];
+            el.setAttribute("points", serializePoints(pts));
+          }
+          break;
+        }
+        case "rect":
+          if (rectAnchor) {
+            set("x", Math.min(rectAnchor.x, p.x));
+            set("y", Math.min(rectAnchor.y, p.y));
+            set("width", Math.abs(p.x - rectAnchor.x));
+            set("height", Math.abs(p.y - rectAnchor.y));
+          }
+          break;
+        case "circle-r":
+          set("r", Math.hypot(p.x - at("cx"), p.y - at("cy")));
+          break;
+        case "ellipse-rx":
+          set("rx", Math.abs(p.x - at("cx")));
+          break;
+        case "ellipse-ry":
+          set("ry", Math.abs(p.y - at("cy")));
+          break;
+      }
+      setHandles(computeHandles(el, container.getBoundingClientRect()));
       setSelectionBox(userSpaceBBox(svg, el));
     };
     const onUp = () => {
@@ -437,7 +541,7 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
     }
     const cr = container.getBoundingClientRect();
     setSelectionBox(userSpaceBBox(svg, el));
-    setHandles(el.tagName.toLowerCase() === "line" ? lineHandles(el, cr) : []);
+    setHandles(computeHandles(el, cr));
     try {
       const r = el.getBoundingClientRect();
       const topY = r.top - cr.top;
@@ -737,12 +841,12 @@ export function SvgCanvas({ svgSource, selectedId, onSelect, onChange }: Props) 
         </div>
       )}
 
-      {/* Endpoint handles for a selected line — drag to move each end. */}
+      {/* Geometry handles for the selected shape — drag to reshape. */}
       {handles.map((h) => (
         <div
-          key={h.key}
-          onPointerDown={(e) => startHandleDrag(e, h.key)}
-          title="Drag endpoint"
+          key={h.id}
+          onPointerDown={(e) => startHandleDrag(e, h)}
+          title="Drag to reshape"
           className="absolute z-20 h-3 w-3 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border-2 border-primary bg-background shadow-sm"
           style={{ left: h.x, top: h.y }}
         />
