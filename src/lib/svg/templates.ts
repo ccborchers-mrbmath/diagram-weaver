@@ -19,9 +19,13 @@ import {
   radialDir,
   sub,
   widestGapDir,
+  getActiveFont,
+  setActiveFont,
   DASH,
+  FONTS,
   LW,
   LW_THIN,
+  type Curriculum,
   type Pt,
 } from "./engine";
 
@@ -607,11 +611,23 @@ export function defaultParams(tpl: Template): ParamValues {
   return coerceParams(tpl, {});
 }
 
-/** Render a template to an SVG string. Throws if the id is unknown. */
-export function renderTemplate(id: string, raw: ParamValues = {}): string {
+/** Render a template to an SVG string in a curriculum's house style. Throws if
+ *  the id is unknown. The active font is set around the synchronous render and
+ *  always restored. */
+export function renderTemplate(
+  id: string,
+  raw: ParamValues = {},
+  curriculum: Curriculum = "cambridge",
+): string {
   const tpl = TEMPLATES_BY_ID[id];
   if (!tpl) throw new Error(`Unknown template: ${id}`);
-  return tpl.render(coerceParams(tpl, raw));
+  const prevFont = getActiveFont();
+  setActiveFont(FONTS[curriculum]);
+  try {
+    return tpl.render(coerceParams(tpl, raw));
+  } finally {
+    setActiveFont(prevFont);
+  }
 }
 
 /** Compact catalogue string for prompting the AI router. */

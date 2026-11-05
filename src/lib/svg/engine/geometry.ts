@@ -81,6 +81,32 @@ export const DASH = "7,4";
 // Times New Roman first (Word/Windows). 'Liberation Serif' is the metric-compatible
 // clone so a machine without TNR still lays out identically.
 export const FONT = "'Times New Roman', 'Liberation Serif', Times, serif";
+
+// ---- curriculum house styles ----------------------------------------------
+// The one convention that differs between exam boards is the label font:
+// Cambridge International uses a serif (Times New Roman), the South African IEB
+// uses Arial. 'Liberation Sans' is Arial's metric-compatible clone.
+export type Curriculum = "cambridge" | "ieb";
+
+export const FONTS: Record<Curriculum, string> = {
+  cambridge: FONT,
+  ieb: "Arial, 'Liberation Sans', Helvetica, sans-serif",
+};
+
+export const CURRICULA: { value: Curriculum; label: string }[] = [
+  { value: "cambridge", label: "Cambridge" },
+  { value: "ieb", label: "IEB" },
+];
+
+// Active font for engine-drawn text. Templates set this (synchronously) around
+// a render so figures come out in the chosen curriculum's house style.
+let activeFont = FONTS.cambridge;
+export function setActiveFont(font: string): void {
+  activeFont = font;
+}
+export function getActiveFont(): string {
+  return activeFont;
+}
 export const FS = 19; // label size
 export const ARC_R = 46; // default angle-arc radius
 export const ARC_LBL = 20; // label offset beyond arc

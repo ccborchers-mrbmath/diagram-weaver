@@ -7,7 +7,8 @@ import { InputPanel } from "@/components/editor/InputPanel";
 import { SvgCanvas } from "@/components/editor/SvgCanvas";
 import { CodeEditor } from "@/components/editor/CodeEditor";
 import { SAMPLE_SVG } from "@/lib/svg/sample";
-import { assignMissingIds } from "@/lib/svg/parse";
+import { assignMissingIds, applyFontFamily } from "@/lib/svg/parse";
+import { CURRICULA, FONTS, type Curriculum } from "@/lib/svg/engine";
 import { useFileSync, type SaveStatus } from "@/lib/useFileSync";
 import { useHistory } from "@/lib/useHistory";
 import { GitHubControls, type GithubFile } from "@/components/editor/GitHubControls";
@@ -40,6 +41,13 @@ function EditorPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [githubFile, setGithubFile] = useState<GithubFile | null>(null);
+  const [curriculum, setCurriculum] = useState<Curriculum>(() => {
+    try {
+      return localStorage.getItem("curriculum") === "ieb" ? "ieb" : "cambridge";
+    } catch {
+      return "cambridge";
+    }
+  });
 
   // Discrete document edit from the canvas (drag / resize / endpoint / tools).
   const commitSvg = useCallback((next: string) => history.set(next), [history]);
@@ -58,6 +66,23 @@ function EditorPage() {
   );
   const notifyError = useCallback((msg: string) => toast.error(msg), []);
   const fileSync = useFileSync(svg, loadSvg, notifyError);
+
+  // One-click curriculum switch: persist the choice and restyle the current
+  // diagram's label font in a single undoable step. New templates / AI output
+  // are rendered in the chosen style downstream via the `curriculum` prop.
+  const changeCurriculum = useCallback(
+    (next: Curriculum) => {
+      setCurriculum(next);
+      try {
+        localStorage.setItem("curriculum", next);
+      } catch {
+        /* storage unavailable — the in-memory choice still applies */
+      }
+      const restyled = applyFontFamily(svg, FONTS[next]);
+      if (restyled !== svg) history.set(restyled);
+    },
+    [svg, history],
+  );
 
   const undo = useCallback(() => {
     setSelectedId(null);
@@ -112,7 +137,11 @@ function EditorPage() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
-      <InputPanel onGenerate={loadSvg} />
+      <InputPanel
+        onGenerate={loadSvg}
+        curriculum={curriculum}
+        onCurriculumChange={changeCurriculum}
+      />
 
       <main className="flex min-w-0 flex-1 flex-col">
         <section className="flex min-h-0 flex-[3] flex-col border-b border-border">
