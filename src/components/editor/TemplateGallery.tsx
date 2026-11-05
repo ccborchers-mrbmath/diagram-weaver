@@ -13,17 +13,24 @@ import {
   type ParamValues,
   type Template,
 } from "@/lib/svg/templates";
+import type { Curriculum } from "@/lib/svg/engine";
 
 type Props = {
   onRender: (svg: string) => void;
+  curriculum: Curriculum;
 };
 
-export function TemplateGallery({ onRender }: Props) {
+export function TemplateGallery({ onRender, curriculum }: Props) {
   const [selected, setSelected] = useState<Template | null>(null);
 
   if (selected) {
     return (
-      <TemplateEditor template={selected} onBack={() => setSelected(null)} onRender={onRender} />
+      <TemplateEditor
+        template={selected}
+        onBack={() => setSelected(null)}
+        onRender={onRender}
+        curriculum={curriculum}
+      />
     );
   }
 
@@ -46,7 +53,7 @@ export function TemplateGallery({ onRender }: Props) {
                 key={tpl.id}
                 onClick={() => {
                   setSelected(tpl);
-                  onRender(renderTemplate(tpl.id, {}));
+                  onRender(renderTemplate(tpl.id, {}, curriculum));
                 }}
                 className="group flex items-start gap-3 rounded-lg border border-border bg-background p-3 text-left transition-colors hover:border-primary hover:bg-accent"
               >
@@ -70,17 +77,19 @@ function TemplateEditor({
   template,
   onBack,
   onRender,
+  curriculum,
 }: {
   template: Template;
   onBack: () => void;
   onRender: (svg: string) => void;
+  curriculum: Curriculum;
 }) {
   const [values, setValues] = useState<ParamValues>(() => defaultParams(template));
 
   const update = (key: string, value: number | string | boolean) => {
     const next = { ...values, [key]: value };
     setValues(next);
-    onRender(renderTemplate(template.id, coerceParams(template, next)));
+    onRender(renderTemplate(template.id, coerceParams(template, next), curriculum));
   };
 
   return (
@@ -115,7 +124,7 @@ function TemplateEditor({
         onClick={() => {
           const d = defaultParams(template);
           setValues(d);
-          onRender(renderTemplate(template.id, d));
+          onRender(renderTemplate(template.id, d, curriculum));
         }}
       >
         Reset to defaults

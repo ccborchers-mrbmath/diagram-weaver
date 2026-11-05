@@ -9,9 +9,14 @@ import { VoiceButton } from "./VoiceButton";
 import { ImageDropzone } from "./ImageDropzone";
 import { TemplateGallery } from "./TemplateGallery";
 import { generateSvg } from "@/lib/generate-svg.functions";
+import { applyFontFamily } from "@/lib/svg/parse";
+import { CURRICULA, FONTS, type Curriculum } from "@/lib/svg/engine";
+import { cn } from "@/lib/utils";
 
 type Props = {
   onGenerate: (svg: string) => void;
+  curriculum: Curriculum;
+  onCurriculumChange: (c: Curriculum) => void;
 };
 
 function fileToDataUrl(file: File): Promise<string> {
@@ -23,7 +28,7 @@ function fileToDataUrl(file: File): Promise<string> {
   });
 }
 
-export function InputPanel({ onGenerate }: Props) {
+export function InputPanel({ onGenerate, curriculum, onCurriculumChange }: Props) {
   const [prompt, setPrompt] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
@@ -39,7 +44,9 @@ export function InputPanel({ onGenerate }: Props) {
     try {
       const imageDataUrl = file ? await fileToDataUrl(file) : undefined;
       const result = await callGenerate({ data: { prompt: trimmed, imageDataUrl } });
-      onGenerate(result.svg);
+      // The server renders in the default house style with no knowledge of the
+      // chosen curriculum, so restyle its output to the active font here.
+      onGenerate(applyFontFamily(result.svg, FONTS[curriculum]));
       toast.success(
         result.mode === "template"
           ? `Generated from the “${result.templateId}” template`
@@ -65,6 +72,37 @@ export function InputPanel({ onGenerate }: Props) {
         <p className="mt-1 text-xs text-muted-foreground">
           Describe a diagram or pick a template, then refine it visually or in code.
         </p>
+        <div className="mt-4">
+          <div className="mb-1.5 flex items-center justify-between">
+            <span className="text-xs font-medium text-muted-foreground">Curriculum</span>
+            <span className="text-[11px] text-muted-foreground">
+              {curriculum === "ieb" ? "Arial labels" : "Times New Roman labels"}
+            </span>
+          </div>
+          <div
+            role="radiogroup"
+            aria-label="Curriculum"
+            className="grid grid-cols-2 gap-1 rounded-lg border border-border bg-background p-1"
+          >
+            {CURRICULA.map((c) => (
+              <button
+                key={c.value}
+                type="button"
+                role="radio"
+                aria-checked={curriculum === c.value}
+                onClick={() => onCurriculumChange(c.value)}
+                className={cn(
+                  "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                  curriculum === c.value
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                )}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       <Tabs defaultValue="prompt" className="flex min-h-0 flex-1 flex-col">
@@ -126,7 +164,7 @@ export function InputPanel({ onGenerate }: Props) {
         </TabsContent>
 
         <TabsContent value="templates" className="mt-0 min-h-0 flex-1 overflow-y-auto p-5">
-          <TemplateGallery onRender={onGenerate} />
+          <TemplateGallery onRender={onGenerate} curriculum={curriculum} />
         </TabsContent>
       </Tabs>
     </aside>

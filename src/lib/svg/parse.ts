@@ -71,6 +71,20 @@ export function assignMissingIds(source: string): string {
   return ensureIdsOnSvg(root) ? serializeSvg(root) : source;
 }
 
+/** Restyle an existing SVG to a curriculum's label font: set `font-family` on
+ *  the root <svg> and on every <text>/<tspan>, overriding any inline fonts.
+ *  Returns the source unchanged if it doesn't parse (never clobbers mid-edit
+ *  markup) or if nothing changed. */
+export function applyFontFamily(source: string, font: string): string {
+  const root = parseSvg(source);
+  if (!root) return source;
+  root.setAttribute("font-family", font);
+  root.querySelectorAll("text, tspan").forEach((el) => {
+    el.setAttribute("font-family", font);
+  });
+  return serializeSvg(root);
+}
+
 export function collectDraggableIds(root: SVGSVGElement): string[] {
   const ids: string[] = [];
   root.querySelectorAll("[id]").forEach((el) => {

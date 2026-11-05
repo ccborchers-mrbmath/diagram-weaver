@@ -11,8 +11,8 @@ import {
   sub,
   DASH,
   DOT_R,
-  FONT,
   FS,
+  getActiveFont,
   LW,
   LW_THIN,
   PUL_R,
@@ -44,6 +44,9 @@ export class Fig {
   w: number;
   h: number;
   pad: number;
+  // Label font captured at construction, so a figure renders in whichever
+  // curriculum house style was active when it was built.
+  readonly font: string = getActiveFont();
   protected s: string[] = [];
 
   constructor(xmin: number, xmax: number, ymin: number, ymax: number, pad = 16) {
@@ -185,7 +188,7 @@ export class Fig {
     const y = y0 + (vcentre ? size * 0.35 : 0);
     const st = italic ? ' font-style="italic"' : "";
     this.s.push(
-      `<text${idAttr(id)} x="${f2(x + dx)}" y="${f2(y + dy)}" font-family="${FONT}" font-size="${size}" ` +
+      `<text${idAttr(id)} x="${f2(x + dx)}" y="${f2(y + dy)}" font-family="${this.font}" font-size="${size}" ` +
         `text-anchor="${anchor}"${st} fill="${STROKE}">${s}</text>`,
     );
   }
